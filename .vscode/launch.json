@@ -2,54 +2,35 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "STM32 v2 Debug (J-Link)",
-      "type": "jlinkgdbtarget",
+      "name": "STM32 v2 Debug (J-Link, direct)",
+      "type": "cortex-debug",
       "request": "launch",
-      "origin": "snippet",
       "cwd": "${workspaceFolder}",
       "preLaunchTask": "CMake: build Debug",
-      "imagesAndSymbols": [
-        {
-          "imageFileName": "${workspaceFolder}/build/Debug/9C-HTP100-main-v2.elf",
-          "imageOffset": "",
-          "symbolFileName": "${workspaceFolder}/build/Debug/9C-HTP100-main-v2.elf",
-          "symbolOffset": ""
-        }
-      ],
-      "runEntry": "main",
-      "deviceName": "STM32G070CBT6",
-      "deviceCore": "Cortex-M0+",
-      "serverDevice": "STM32G070CB",
-      "serverInterface": "SWD",
-      "serverSpeed": "4000",
-      "serverEndian": "little",
-      "serverPort": "2331",
-      "serverRtos": { "enabled": false }
+      "executable": "${workspaceFolder}/build/Debug/9C-HTP100-main-v2.elf",
+      "servertype": "jlink",
+      "device": "STM32G070CB",
+      "interface": "swd",
+      "serverpath": "${env:LOCALAPPDATA}/stm32cube/bundles/jlink-gdbserver/9.14.1+st.1/bin/JLinkGDBServerCL.exe",
+      "gdbPath": "${env:LOCALAPPDATA}/stm32cube/bundles/gnu-gdb-for-stm32/14.3.1+st.2/bin/arm-none-eabi-gdb.exe",
+      "armToolchainPath": "${env:LOCALAPPDATA}/stm32cube/bundles/gnu-tools-for-stm32/14.3.1+st.2/bin",
+      "runToEntryPoint": "main",
+      "showDevDebugOutput": "none"
     },
     {
-      "name": "STM32 v2 Debug (ST-Link)",
-      "type": "stlinkgdbtarget",
+      "name": "STM32 v2 Debug (ST-Link, direct)",
+      "type": "cortex-debug",
       "request": "launch",
-      "origin": "snippet",
       "cwd": "${workspaceFolder}",
       "preLaunchTask": "CMake: build Debug",
-      "imagesAndSymbols": [
-        {
-          "imageFileName": "${workspaceFolder}/build/Debug/9C-HTP100-main-v2.elf",
-          "imageOffset": "",
-          "symbolFileName": "${workspaceFolder}/build/Debug/9C-HTP100-main-v2.elf",
-          "symbolOffset": ""
-        }
-      ],
-      "runEntry": "main",
-      "deviceName": "STM32G070CBT6",
-      "deviceCore": "Cortex-M0+",
-      "serverInterface": "SWD",
-      "serverInterfaceFrequency": "Auto",
-      "serverPort": "61234",
-      "deviceDebugInLowPower": true,
-      "deviceStopWDGOnHalt": true,
-      "serverRtos": { "enabled": false }
+      "executable": "${workspaceFolder}/build/Debug/9C-HTP100-main-v2.elf",
+      "servertype": "stlink",
+      "serverpath": "${env:LOCALAPPDATA}/stm32cube/bundles/stlink-gdbserver/7.14.0+st.2/bin/ST-LINK_gdbserver.exe",
+      "stm32cubeprogrammer": "${env:LOCALAPPDATA}/stm32cube/bundles/programmer/2.23.0",
+      "gdbPath": "${env:LOCALAPPDATA}/stm32cube/bundles/gnu-gdb-for-stm32/14.3.1+st.2/bin/arm-none-eabi-gdb.exe",
+      "armToolchainPath": "${env:LOCALAPPDATA}/stm32cube/bundles/gnu-tools-for-stm32/14.3.1+st.2/bin",
+      "runToEntryPoint": "main",
+      "showDevDebugOutput": "none"
     }
   ]
 }

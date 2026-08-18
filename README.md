@@ -14,7 +14,8 @@ application architecture.
 - TMP112 temperature control with an independent 44 C cutoff;
 - pressure control with an independent 650 mmHg cutoff;
 - current 5AA5/6AA6 screen framing, CRC, commands, telemetry, presets, and screen-owned countdown;
-- new-eye-shield consumption at the first formal treatment start;
+- new-eye-shield consumption at the first formal treatment start, while the same
+  uninterrupted insertion session remains reusable and reinsertion is blocked;
 - treatment prohibited whenever valid external charging power is present;
 - low-battery warning at SOC <= 1%, then shutdown at <= 3150 mV after five confirmations;
 - user stop, natural finish, fault, power loss, charging insertion, critical battery,

@@ -4,6 +4,8 @@
 
 - preheating does not consume a new eye shield;
 - formal treatment consumes it exactly once;
+- the same uninterrupted insertion session can start another treatment;
+- removal followed by reinsertion exposes the consumed marker and blocks treatment;
 - only a natural finish increments the treatment counter;
 - user stop, charging, fault, power loss and critical battery all enter homing;
 - external power blocks treatment;

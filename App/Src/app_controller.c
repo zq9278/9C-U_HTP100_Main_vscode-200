@@ -130,7 +130,7 @@ static void begin_home(void)
 
 static bool consume_eye_at_first_actuation(void)
 {
-    if (g_app.status.eye == APP_EYE_SERVICE) {
+    if (g_app.status.eye == APP_EYE_SERVICE || g_app.status.eye == APP_EYE_IN_USE) {
         return true;
     }
     if (g_app.status.eye != APP_EYE_NEW || g_app.port == NULL ||
@@ -138,7 +138,7 @@ static bool consume_eye_at_first_actuation(void)
         AppController_RaiseFault(APP_FAULT_TMP112_COMM);
         return false;
     }
-    /* The current treatment may finish, but no second treatment is allowed. */
+    /* Keep this insertion session usable; reinsertion will expose the consumed marker. */
     g_app.status.eye = APP_EYE_IN_USE;
     if (g_app.port->screen_float != NULL) {
         g_app.port->screen_float(SCREEN_NEW_EYE, 0.0f);
@@ -166,7 +166,8 @@ bool AppController_Prepare(AppMode mode, float pressure_mmhg)
     if (g_app.status.state != APP_STATE_IDLE || mode == APP_MODE_NONE ||
         g_app.status.charging || g_app.status.fault != APP_FAULT_NONE ||
         !g_app.status.home_valid ||
-        (g_app.status.eye != APP_EYE_NEW && g_app.status.eye != APP_EYE_SERVICE)) {
+        (g_app.status.eye != APP_EYE_NEW && g_app.status.eye != APP_EYE_IN_USE &&
+         g_app.status.eye != APP_EYE_SERVICE)) {
         return false;
     }
     if (mode_uses_pressure(mode) && !g_app.status.pressure_zero_valid) {
@@ -230,9 +231,6 @@ void AppController_Stop(AppStopReason reason)
         return;
     }
     g_app.status.stop_reason = reason;
-    if (g_app.status.eye == APP_EYE_IN_USE) {
-        g_app.status.eye = APP_EYE_CONSUMED;
-    }
     safe_outputs_off();
     record_natural_finish_once();
     if (g_app.port != NULL && g_app.port->screen_float != NULL) {

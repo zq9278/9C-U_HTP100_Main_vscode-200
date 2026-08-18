@@ -68,7 +68,31 @@ static void test_eye_is_consumed_only_at_formal_start(void)
     assert(eye_consume_count == 1U);
     AppController_Stop(APP_STOP_NATURAL);
     assert(treatment_count == 1U);
+    assert(AppController_Status()->eye == APP_EYE_IN_USE);
+
+    /* EEPROM polling now sees the marker, but the uninterrupted insertion stays usable. */
+    AppController_SetEyeState(APP_EYE_CONSUMED);
+    assert(AppController_Status()->eye == APP_EYE_IN_USE);
+    fake_home_result = APP_ASYNC_OK;
+    AppController_Tick();
+    assert(AppController_Prepare(APP_MODE_HEAT, 0.0f));
+    assert(AppController_Start());
+    assert(eye_consume_count == 1U);
+}
+
+static void test_reinserted_consumed_eye_is_rejected(void)
+{
+    reset_fixture();
+    assert(AppController_Prepare(APP_MODE_HEAT, 0.0f));
+    assert(AppController_Start());
+    AppController_Stop(APP_STOP_USER);
+    fake_home_result = APP_ASYNC_OK;
+    AppController_Tick();
+
+    AppController_SetEyeState(APP_EYE_ABSENT);
+    AppController_SetEyeState(APP_EYE_CONSUMED);
     assert(AppController_Status()->eye == APP_EYE_CONSUMED);
+    assert(!AppController_Prepare(APP_MODE_HEAT, 0.0f));
 }
 
 static void test_only_natural_finish_counts(void)
@@ -124,6 +148,7 @@ static void test_fault_and_power_loss_always_home(void)
 int main(void)
 {
     test_eye_is_consumed_only_at_formal_start();
+    test_reinserted_consumed_eye_is_rejected();
     test_only_natural_finish_counts();
     test_charging_blocks_and_interrupts_treatment();
     test_low_voltage_homes_then_cuts_power();

@@ -6,8 +6,12 @@
 - Preheating does not consume the shield.
 - When formal heat or pressure treatment is started, the marker is immediately
   written as consumed and verified by readback.
-- The current treatment may finish. After it ends, no second treatment can start
-  with that shield, even if it was never unplugged.
+- The current uninterrupted insertion session remains usable after the marker is
+  written. The current treatment may finish, and another treatment may start after
+  homing without writing the marker again.
+- Once removal is observed, reinserting that shield exposes its consumed marker and
+  treatment is rejected. A controller restart also reloads the marker, so an already
+  marked shield is rejected after restart even when it was not physically removed.
 - The service-shield marker `0x0202` remains exempt for production/service work.
 
 ## Countdown compatibility

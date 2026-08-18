@@ -110,7 +110,7 @@ static void handle_work_frame(const uint8_t *frame)
         ScreenProtocol_SendU16(0x00ADU, 1U);
         AppController_ScreenBoot();
         ScreenProtocol_SendU32(0x2060U, APP_SOFTWARE_VERSION);
-        ScreenProtocol_SendU16(0x00ABU, 0U);
+        ScreenProtocol_SendU16(0x00ABU, AppController_StorageRead(0x06U, 0U));
         break;
     case 0x1051U:
     case 0x1052U:
@@ -171,7 +171,10 @@ static void handle_prepare_frame(const uint8_t *frame)
         AppController_StorageEraseEye();
         break;
     case 0x1060U:
-        ScreenProtocol_SendU16(0x00ABU, value <= 1U ? value : 0U);
+        if (value <= 1U) {
+            (void)AppController_StorageWrite(0x06U, value);
+        }
+        ScreenProtocol_SendU16(0x00ABU, AppController_StorageRead(0x06U, 0U));
         break;
     default:
         /* Preset persistence is handled by the storage service, not the

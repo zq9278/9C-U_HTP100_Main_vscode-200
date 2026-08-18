@@ -24,6 +24,7 @@ typedef struct {
     uint32_t last_heat_ms;
     uint32_t last_pressure_ms;
     uint32_t last_telemetry_ms;
+    uint32_t last_fault_report_ms;
     uint8_t low_voltage_samples;
     bool count_recorded;
     bool pending_power_off;
@@ -258,6 +259,7 @@ void AppController_RaiseFault(AppFault fault)
             g_app.port->screen_u32(SCREEN_FAULT, (uint32_t)fault);
         }
     }
+    g_app.last_fault_report_ms = now_ms();
     if (g_app.status.state != APP_STATE_HOMING && g_app.status.state != APP_STATE_SHUTDOWN) {
         AppController_Stop(APP_STOP_FAULT);
     }
@@ -478,6 +480,13 @@ static void tick_pressure(uint32_t now)
 void AppController_Tick(void)
 {
     uint32_t now = now_ms();
+
+    if (g_app.status.fault != APP_FAULT_NONE &&
+        now - g_app.last_fault_report_ms >= 1000U &&
+        g_app.port != NULL && g_app.port->fault_report != NULL) {
+        g_app.port->fault_report(g_app.status.fault);
+        g_app.last_fault_report_ms = now;
+    }
 
     if (g_app.status.state == APP_STATE_HOMING) {
         tick_homing();

@@ -1,0 +1,12 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "CMake: build Debug",
+      "type": "shell",
+      "command": "cmake --build build/Debug --parallel",
+      "problemMatcher": "$gcc",
+      "group": { "kind": "build", "isDefault": true }
+    }
+  ]
+}

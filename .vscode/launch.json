@@ -1,0 +1,55 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "STM32 v2 Debug (J-Link)",
+      "type": "jlinkgdbtarget",
+      "request": "launch",
+      "origin": "snippet",
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "CMake: build Debug",
+      "imagesAndSymbols": [
+        {
+          "imageFileName": "${workspaceFolder}/build/Debug/9C-HTP100-main-v2.elf",
+          "imageOffset": "",
+          "symbolFileName": "${workspaceFolder}/build/Debug/9C-HTP100-main-v2.elf",
+          "symbolOffset": ""
+        }
+      ],
+      "runEntry": "main",
+      "deviceName": "STM32G070CBT6",
+      "deviceCore": "Cortex-M0+",
+      "serverDevice": "STM32G070CB",
+      "serverInterface": "SWD",
+      "serverSpeed": "4000",
+      "serverEndian": "little",
+      "serverPort": "2331",
+      "serverRtos": { "enabled": false }
+    },
+    {
+      "name": "STM32 v2 Debug (ST-Link)",
+      "type": "stlinkgdbtarget",
+      "request": "launch",
+      "origin": "snippet",
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "CMake: build Debug",
+      "imagesAndSymbols": [
+        {
+          "imageFileName": "${workspaceFolder}/build/Debug/9C-HTP100-main-v2.elf",
+          "imageOffset": "",
+          "symbolFileName": "${workspaceFolder}/build/Debug/9C-HTP100-main-v2.elf",
+          "symbolOffset": ""
+        }
+      ],
+      "runEntry": "main",
+      "deviceName": "STM32G070CBT6",
+      "deviceCore": "Cortex-M0+",
+      "serverInterface": "SWD",
+      "serverInterfaceFrequency": "Auto",
+      "serverPort": "61234",
+      "deviceDebugInLowPower": true,
+      "deviceStopWDGOnHalt": true,
+      "serverRtos": { "enabled": false }
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+build/
+outputs/
+.cache/
+.settings/
+*.mxproject
+*.o
+*.obj
+*.elf
+*.hex
+*.bin
+*.map
+compile_commands.json

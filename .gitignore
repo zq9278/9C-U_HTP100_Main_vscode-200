@@ -1,4 +1,5 @@
 build/
+build_fixed/
 outputs/
 .cache/
 .settings/
@@ -10,3 +11,7 @@ outputs/
 *.bin
 *.map
 compile_commands.json
+__pycache__/
+*.pyc
+.venv/
+*.spec

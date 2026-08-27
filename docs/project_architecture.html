@@ -1,0 +1,925 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>9C-HTP100 主控固件 v2｜目录与程序架构</title>
+  <style>
+    :root {
+      --bg: #f4f7fb;
+      --paper: #ffffff;
+      --paper-2: #f8fafc;
+      --ink: #142033;
+      --muted: #66758a;
+      --line: #dbe3ec;
+      --blue: #1769e0;
+      --blue-soft: #eaf2ff;
+      --green: #087f5b;
+      --green-soft: #e8f7f1;
+      --amber: #a45b00;
+      --amber-soft: #fff3dd;
+      --red: #b42318;
+      --red-soft: #ffefed;
+      --violet: #6941c6;
+      --violet-soft: #f2edff;
+      --shadow: 0 12px 32px rgba(18, 38, 63, .08);
+      --radius: 16px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--bg);
+      font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      line-height: 1.68;
+    }
+    a { color: var(--blue); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code, pre { font-family: "Cascadia Code", Consolas, monospace; }
+    code {
+      padding: .1em .35em;
+      border-radius: 5px;
+      background: var(--blue-soft);
+      color: #124f9f;
+    }
+    pre {
+      margin: 0;
+      padding: 18px;
+      overflow: auto;
+      border: 1px solid #29394f;
+      border-radius: 12px;
+      color: #dbeafe;
+      background: #111b2b;
+      line-height: 1.55;
+      font-size: 13px;
+    }
+
+    .shell {
+      display: grid;
+      grid-template-columns: 270px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+    aside {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      padding: 28px 22px;
+      overflow: auto;
+      color: #e5edf8;
+      background: #111c2d;
+    }
+    .brand { margin-bottom: 26px; }
+    .brand small {
+      display: block;
+      margin-bottom: 5px;
+      color: #8fa6c4;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    .brand strong { font-size: 19px; }
+    nav a {
+      display: block;
+      margin: 3px 0;
+      padding: 8px 11px;
+      border-radius: 8px;
+      color: #b9c8dc;
+      font-size: 14px;
+    }
+    nav a:hover {
+      color: white;
+      background: #1d2c43;
+      text-decoration: none;
+    }
+    .side-note {
+      margin-top: 28px;
+      padding: 13px;
+      border: 1px solid #31445f;
+      border-radius: 10px;
+      color: #aebdd1;
+      font-size: 12px;
+    }
+
+    main {
+      width: min(1180px, 100%);
+      padding: 44px 46px 90px;
+    }
+    .hero {
+      position: relative;
+      padding: 38px;
+      overflow: hidden;
+      border-radius: 24px;
+      color: white;
+      background: linear-gradient(135deg, #153b74 0%, #1769e0 62%, #5d8ff0 100%);
+      box-shadow: var(--shadow);
+    }
+    .hero::after {
+      position: absolute;
+      right: -70px;
+      bottom: -110px;
+      width: 310px;
+      height: 310px;
+      border: 55px solid rgba(255,255,255,.09);
+      border-radius: 50%;
+      content: "";
+    }
+    .eyebrow {
+      margin: 0 0 6px;
+      font-size: 13px;
+      letter-spacing: .12em;
+      opacity: .78;
+      text-transform: uppercase;
+    }
+    h1 { margin: 0; font-size: clamp(30px, 5vw, 48px); line-height: 1.16; }
+    .lead { max-width: 760px; margin: 16px 0 24px; font-size: 17px; opacity: .92; }
+    .meta { display: flex; flex-wrap: wrap; gap: 9px; }
+    .pill {
+      padding: 6px 11px;
+      border: 1px solid rgba(255,255,255,.24);
+      border-radius: 999px;
+      background: rgba(255,255,255,.12);
+      font-size: 12px;
+    }
+
+    section { margin-top: 46px; scroll-margin-top: 20px; }
+    h2 { margin: 0 0 17px; font-size: 27px; line-height: 1.3; }
+    h3 { margin: 25px 0 11px; font-size: 19px; }
+    h4 { margin: 16px 0 7px; font-size: 16px; }
+    .section-intro { max-width: 900px; margin-top: -8px; color: var(--muted); }
+
+    .grid { display: grid; gap: 16px; }
+    .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .card {
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--paper);
+      box-shadow: 0 5px 18px rgba(18, 38, 63, .04);
+    }
+    .card h3, .card h4 { margin-top: 0; }
+    .card p:last-child, .card ul:last-child { margin-bottom: 0; }
+    .metric { font-size: 29px; font-weight: 720; line-height: 1.2; }
+    .caption { color: var(--muted); font-size: 13px; }
+    .accent-blue { border-top: 4px solid var(--blue); }
+    .accent-green { border-top: 4px solid var(--green); }
+    .accent-violet { border-top: 4px solid var(--violet); }
+    .accent-amber { border-top: 4px solid #e09219; }
+
+    .callout {
+      margin: 16px 0;
+      padding: 15px 17px;
+      border-left: 4px solid var(--blue);
+      border-radius: 8px;
+      background: var(--blue-soft);
+    }
+    .callout.good { border-color: var(--green); background: var(--green-soft); }
+    .callout.warn { border-color: #e09219; background: var(--amber-soft); }
+    .callout.danger { border-color: var(--red); background: var(--red-soft); }
+    .callout strong { display: block; margin-bottom: 3px; }
+
+    .layer-stack { display: grid; gap: 10px; }
+    .layer {
+      display: grid;
+      grid-template-columns: 150px 1fr;
+      align-items: center;
+      min-height: 76px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      overflow: hidden;
+      background: var(--paper);
+    }
+    .layer-name {
+      align-self: stretch;
+      display: grid;
+      place-items: center;
+      padding: 14px;
+      color: white;
+      background: var(--blue);
+      font-weight: 700;
+      text-align: center;
+    }
+    .layer:nth-child(2) .layer-name { background: var(--violet); }
+    .layer:nth-child(3) .layer-name { background: var(--green); }
+    .layer:nth-child(4) .layer-name { background: #53657d; }
+    .layer:nth-child(5) .layer-name { background: #26364c; }
+    .layer-body { padding: 14px 18px; }
+    .layer-body b { margin-right: 10px; }
+
+    .flow {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: stretch;
+      gap: 10px;
+    }
+    .flow-node {
+      position: relative;
+      min-width: 130px;
+      flex: 1 1 140px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: var(--paper);
+      text-align: center;
+    }
+    .flow-node:not(:last-child)::after {
+      position: absolute;
+      top: 50%;
+      right: -10px;
+      z-index: 2;
+      width: 10px;
+      height: 2px;
+      background: var(--blue);
+      content: "";
+    }
+    .flow-node strong { display: block; color: var(--blue); }
+    .flow-node small { color: var(--muted); }
+
+    .state-map {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(120px, 1fr));
+      gap: 10px;
+      align-items: center;
+    }
+    .state {
+      min-height: 82px;
+      display: grid;
+      place-items: center;
+      padding: 10px;
+      border: 2px solid #c8d7ea;
+      border-radius: 14px;
+      background: var(--paper);
+      text-align: center;
+      font-weight: 700;
+    }
+    .state.primary { color: #0f56ae; border-color: #6ea5e8; background: var(--blue-soft); }
+    .state.safe { color: var(--green); border-color: #73c9aa; background: var(--green-soft); }
+    .state.stop { color: var(--amber); border-color: #edb55e; background: var(--amber-soft); }
+    .state.fault { color: var(--red); border-color: #ea8d84; background: var(--red-soft); }
+    .arrow { color: var(--blue); font-size: 24px; text-align: center; }
+
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--paper);
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { padding: 11px 13px; border-bottom: 1px solid var(--line); vertical-align: top; text-align: left; }
+    th { color: #32455f; background: #eef3f8; white-space: nowrap; }
+    tr:last-child td { border-bottom: 0; }
+    tbody tr:hover { background: #f8fbff; }
+    .yes { color: var(--green); font-weight: 700; }
+    .no { color: var(--muted); }
+
+    .tree .folder { color: #7db5ff; font-weight: 700; }
+    .tree .important { color: #93e1c1; }
+    .tree .comment { color: #8294ab; }
+
+    .tag {
+      display: inline-block;
+      margin: 2px 3px 2px 0;
+      padding: 2px 7px;
+      border-radius: 999px;
+      color: #38506e;
+      background: #e9eff6;
+      font-size: 11px;
+      white-space: nowrap;
+    }
+    .priority { counter-reset: priority; list-style: none; padding: 0; }
+    .priority li {
+      counter-increment: priority;
+      position: relative;
+      margin: 9px 0;
+      padding: 10px 12px 10px 46px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--paper);
+    }
+    .priority li::before {
+      position: absolute;
+      left: 12px;
+      top: 9px;
+      display: grid;
+      width: 25px;
+      height: 25px;
+      place-items: center;
+      border-radius: 50%;
+      color: white;
+      background: var(--blue);
+      content: counter(priority);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .risk-list { display: grid; gap: 11px; }
+    .risk {
+      display: grid;
+      grid-template-columns: 92px 1fr;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      overflow: hidden;
+      background: var(--paper);
+    }
+    .risk-level { display: grid; place-items: center; padding: 12px; font-weight: 700; }
+    .risk-level.high { color: var(--red); background: var(--red-soft); }
+    .risk-level.medium { color: var(--amber); background: var(--amber-soft); }
+    .risk-level.low { color: var(--green); background: var(--green-soft); }
+    .risk-body { padding: 12px 15px; }
+    .risk-body strong { display: block; }
+    .risk-body span { color: var(--muted); font-size: 13px; }
+
+    footer {
+      margin-top: 55px;
+      padding-top: 20px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    @media (max-width: 920px) {
+      .shell { display: block; }
+      aside { position: static; width: auto; height: auto; }
+      nav { columns: 2; }
+      main { padding: 28px 18px 65px; }
+      .grid.two, .grid.three { grid-template-columns: 1fr; }
+      .state-map { grid-template-columns: 1fr; }
+      .arrow { transform: rotate(90deg); }
+      .flow-node::after { display: none; }
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0e1622;
+        --paper: #152132;
+        --paper-2: #111b29;
+        --ink: #e7eef8;
+        --muted: #a2b0c2;
+        --line: #2b3b51;
+        --blue-soft: #142c4d;
+        --green-soft: #12382e;
+        --amber-soft: #3c2b13;
+        --red-soft: #3c211f;
+        --violet-soft: #2b2343;
+      }
+      code { color: #9fc7ff; }
+      th { color: #d8e5f5; background: #1d2b3e; }
+      tbody tr:hover { background: #18263a; }
+      .tag { color: #c4d3e6; background: #26374d; }
+    }
+    @media print {
+      body { background: white; }
+      .shell { display: block; }
+      aside { display: none; }
+      main { width: auto; padding: 0; }
+      .hero { color: black; background: white; border: 2px solid #333; box-shadow: none; }
+      .card, .table-wrap { box-shadow: none; break-inside: avoid; }
+      section { break-inside: auto; }
+    }
+  </style>
+</head>
+<body>
+<div class="shell">
+  <aside>
+    <div class="brand">
+      <small>Firmware architecture</small>
+      <strong>9C-HTP100 主控 v2</strong>
+    </div>
+    <nav aria-label="文档目录">
+      <a href="#overview">1. 总体结论</a>
+      <a href="#directory">2. 目录结构</a>
+      <a href="#layers">3. 分层架构</a>
+      <a href="#startup">4. 启动与调度</a>
+      <a href="#state-machine">5. 业务状态机</a>
+      <a href="#modules">6. 模块职责</a>
+      <a href="#hardware">7. 硬件与总线</a>
+      <a href="#screen">8. 屏幕协议</a>
+      <a href="#charging">9. 充电、电量与灯光</a>
+      <a href="#safety">10. 安全策略</a>
+      <a href="#interrupts">11. 中断和并发</a>
+      <a href="#build">12. 构建与调试</a>
+      <a href="#risks">13. 风险与建议</a>
+      <a href="#files">14. 阅读路线</a>
+    </nav>
+    <div class="side-note">
+      <b>文档基线</b><br>
+      工程：9C-U_HTP100_Main_vscode-200<br>
+      分支：master<br>
+      快照日期：2026-08-19<br>
+      说明：基于当前工作区，包含尚未提交的修改。
+    </div>
+  </aside>
+
+  <main>
+    <header class="hero">
+      <p class="eyebrow">STM32G070CBT6 · FreeRTOS · C11</p>
+      <h1>目录与程序架构分析</h1>
+      <p class="lead">
+        当前 v2 工程以单一应用任务为核心，将治疗状态、执行器切换和安全停机集中到
+        <code>AppController</code>，再通过 <code>AppPort</code> 调用板级实现。目标是避免旧工程中
+        多任务共享电机/SPI、强制删除任务和分散全局状态造成的竞态。
+      </p>
+      <div class="meta">
+        <span class="pill">单应用所有者</span>
+        <span class="pill">10 ms 协作循环</span>
+        <span class="pill">非阻塞回零</span>
+        <span class="pill">屏幕拥有倒计时</span>
+        <span class="pill">充电禁止治疗</span>
+      </div>
+    </header>
+
+    <section id="overview">
+      <h2>1. 总体结论</h2>
+      <p class="section-intro">
+        v2 已经从“多个业务任务直接操作硬件”转为“一个业务控制器串行决策”。总体方向正确，
+        电机/SPI 竞态风险显著降低；目前主要技术债已从并发失控转移到板级文件过大、恢复策略不对称和测试自动化不足。
+      </p>
+      <div class="grid three">
+        <article class="card accent-blue">
+          <div class="metric">1</div>
+          <h3>业务任务</h3>
+          <p>唯一的 <code>freertos_main</code> 高优先级任务运行全部治疗业务，避免多个任务争用 TMC5130、ADS1220 和状态变量。</p>
+        </article>
+        <article class="card accent-green">
+          <div class="metric">10 ms</div>
+          <h3>主循环节拍</h3>
+          <p>串口、按键、眼盾、电源、状态机和 LED 都在同一循环内协作推进；具体控制周期由各模块自行限频。</p>
+        </article>
+        <article class="card accent-violet">
+          <div class="metric">85.7 KB</div>
+          <h3>当前 Debug Flash</h3>
+          <p>最近构建约占 65.4% Flash、20.9 KB RAM（56.9%），仍有扩展余量，但应继续关注任务栈和日志缓冲。</p>
+        </article>
+      </div>
+      <div class="callout good">
+        <strong>架构上最重要的改进</strong>
+        中断不再直接执行业务，应用任务不再被动态删除；所有停止原因统一经过“立即关闭危险输出 → 回零 → 决定空闲/故障/关机”的路径。
+      </div>
+    </section>
+
+    <section id="directory">
+      <h2>2. 目录结构</h2>
+      <p class="section-intro">工程同时包含手写业务代码、板级适配、CubeMX 生成代码和第三方库。日常开发应优先关注 <code>App</code>、<code>Bsp</code> 和 <code>tests</code>。</p>
+      <pre class="tree"><span class="folder">9C-U_HTP100_Main_vscode-200/</span>
+├─ <span class="folder">App/</span>                         <span class="comment"># 与芯片无关的业务层</span>
+│  ├─ <span class="folder">Inc/</span>
+│  │  ├─ <span class="important">app_types.h</span>           <span class="comment"># 状态、模式、停止原因、故障码、快照</span>
+│  │  ├─ <span class="important">app_config.h</span>          <span class="comment"># 温度、压力、电量、周期和功能宏</span>
+│  │  ├─ <span class="important">app_port.h</span>            <span class="comment"># 业务层访问硬件的函数表接口</span>
+│  │  └─ screen_protocol.h
+│  └─ <span class="folder">Src/</span>
+│     ├─ <span class="important">app_controller.c</span>     <span class="comment"># 核心状态机与安全策略</span>
+│     ├─ <span class="important">app_main.c</span>           <span class="comment"># 10 ms 单任务循环</span>
+│     ├─ screen_protocol.c      <span class="comment"># 5AA5/6AA6 协议解析和发送</span>
+│     ├─ app_log.c              <span class="comment"># USART1 文本日志</span>
+│     └─ app_hooks.c            <span class="comment"># Assert/栈溢出/内存失败现场</span>
+├─ <span class="folder">Bsp/</span>                         <span class="comment"># 板级实现层</span>
+│  ├─ Inc/{board_port,*_driver,treatment_hw,screen_uart}.h
+│  └─ Src/
+│     ├─ <span class="important">board_port.c</span>         <span class="comment"># AppPort 组装、启动顺序、事件与 ISR 转发</span>
+│     ├─ treatment_hw.c         <span class="comment"># 回零、加热 PID、压力阶段控制</span>
+│     ├─ {tmc5130,ads1220,eye,charger,ws2812,storage}_driver.c
+│     ├─ screen_uart.c          <span class="comment"># USART2 DMA 接收与环形缓冲</span>
+│     └─ bq27441_gauge.c        <span class="comment"># 3300 mAh 电量计配置和有效性检查</span>
+├─ <span class="folder">Core/</span>                        <span class="comment"># CubeMX 入口、外设初始化和中断</span>
+│  ├─ Src/main.c
+│  ├─ Src/app_freertos.c
+│  ├─ Src/stm32g0xx_it.c
+│  └─ Src/{gpio,i2c,spi,tim,usart,dma}.c
+├─ <span class="folder">Drivers/</span>                     <span class="comment"># STM32G0 HAL 和 CMSIS</span>
+├─ <span class="folder">Middlewares/</span>                 <span class="comment"># FreeRTOS/CMSIS-RTOS2/SEGGER RTT</span>
+├─ <span class="folder">tests/</span>
+│  └─ test_app_controller.c    <span class="comment"># 业务状态机的本机单元测试</span>
+├─ <span class="folder">docs/</span>
+│  ├─ business_rules.md
+│  ├─ 软件通讯协议.xlsx
+│  └─ project_architecture.html <span class="comment"># 本文档</span>
+├─ <span class="folder">.vscode/</span>                     <span class="comment"># J-Link/ST-Link 直接调试配置</span>
+├─ CMakeLists.txt
+├─ CMakePresets.json
+├─ 9C-HTP100-main.ioc          <span class="comment"># CubeMX 工程</span>
+└─ STM32G070XX_FLASH.ld</pre>
+
+      <div class="grid two" style="margin-top:16px">
+        <div class="card">
+          <h3>手写代码边界</h3>
+          <p><code>App/</code> 与 <code>Bsp/</code> 是主要业务资产；修改后不依赖重新生成 CubeMX。<code>Core/</code> 包含生成代码和少量用户区钩子，重新生成前必须检查差异。</p>
+        </div>
+        <div class="card">
+          <h3>生成与第三方边界</h3>
+          <p><code>Drivers/</code>、<code>Middlewares/</code> 原则上不做业务修改。<code>build/</code> 是构建产物，不属于源码设计的一部分。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="layers">
+      <h2>3. 分层架构</h2>
+      <div class="layer-stack">
+        <div class="layer">
+          <div class="layer-name">交互 / 事件</div>
+          <div class="layer-body"><b>ScreenProtocol</b> 屏幕命令、屏幕遥测、按键事件、PWR_SENSE、电池与眼盾采样。</div>
+        </div>
+        <div class="layer">
+          <div class="layer-name">业务编排</div>
+          <div class="layer-body"><b>AppMain</b> 单循环调度；<b>AppController</b> 保存唯一业务状态并决定何时启动、停止、回零、计数和报错。</div>
+        </div>
+        <div class="layer">
+          <div class="layer-name">抽象接口</div>
+          <div class="layer-body"><b>AppPort</b> 以函数表形式声明加热、电机、压力、眼盾、电源、灯光、存储和屏幕能力，使状态机可脱离 HAL 测试。</div>
+        </div>
+        <div class="layer">
+          <div class="layer-name">板级服务</div>
+          <div class="layer-body"><b>BoardPort</b> 只组装 AppPort；<b>TreatmentHw</b> 承担回零、温控和压力流程；各驱动分别封装 TMC5130、ADS1220、眼盾 I2C、充电、电量、WS2812、板载存储和屏幕 UART。</div>
+        </div>
+        <div class="layer">
+          <div class="layer-name">HAL / 硬件</div>
+          <div class="layer-body"><b>STM32 HAL + Core</b> 提供 GPIO、SPI、I2C、UART、TIM、DMA、EXTI 和启动代码。</div>
+        </div>
+      </div>
+      <div class="callout">
+        <strong>依赖方向</strong>
+        <code>AppController → AppPort ← BoardPort → TreatmentHw / Drivers → HAL</code>。业务层不直接包含具体 GPIO 或总线句柄；板级层不应反向决定治疗业务状态。
+      </div>
+    </section>
+
+    <section id="startup">
+      <h2>4. 启动与调度</h2>
+      <h3>4.1 启动链</h3>
+      <div class="flow">
+        <div class="flow-node"><strong>Reset_Handler</strong><small>数据段、BSS、SystemInit</small></div>
+        <div class="flow-node"><strong>main()</strong><small>HAL、时钟、全部外设</small></div>
+        <div class="flow-node"><strong>FreeRTOS</strong><small>创建 freertos_main</small></div>
+        <div class="flow-node"><strong>Board_Init</strong><small>安全输出与外设自检</small></div>
+        <div class="flow-node"><strong>AppController_Init</strong><small>立即回零</small></div>
+        <div class="flow-node"><strong>10 ms 循环</strong><small>事件 + 状态机 + LED</small></div>
+      </div>
+
+      <h3>4.2 Board_Init 顺序</h3>
+      <ol>
+        <li>拉高 SPI 片选、关闭 TMC5130 和加热输出。</li>
+        <li>WS2812 数据保持低，关闭灯电源 300 ms，重新上电后先发送黑帧。</li>
+        <li>配置 BQ25895：固定 5 V 输入、2 A 输入限制、1.984 A 充电、4.208 V、64 mA 终止、关闭寄存器看门狗，并逐项回读。</li>
+        <li>初始化 BQ27441：容量 3300 mAh；仅在 ITPOR 或配置不匹配时重写参数；等待测量初始化完成后才使用 SOC。</li>
+        <li>初始化 ADS1220、写寄存器并 RREG 回读验证。</li>
+        <li>加载持久化计数，启动 USART2 Receive-to-Idle DMA。</li>
+      </ol>
+
+      <h3>4.3 主循环时序</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>工作</th><th>周期/触发</th><th>执行位置</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td>屏幕数据解析</td><td>每轮</td><td>AppMain</td><td>从 512 字节环形缓冲取数据并喂给协议解析器。</td></tr>
+            <tr><td>实体按键</td><td>事件标志</td><td>AppMain</td><td>准备态启动；运行态用户停止。</td></tr>
+            <tr><td>眼盾检查</td><td>100 ms</td><td>BoardPort → Controller</td><td>插入确认 5 次，拔出确认 3 次。</td></tr>
+            <tr><td>充电与电池</td><td>1 s，首次立即</td><td>BoardPort → Controller</td><td>BQ25895 状态优先，不受 BQ27441 初始化延迟影响。</td></tr>
+            <tr><td>PWR_SENSE</td><td>事件标志</td><td>Controller</td><td>外部电源存在时忽略并撤销误关机。</td></tr>
+            <tr><td>回零</td><td>100 ms 轮询</td><td>Controller → BoardPort</td><td>8 s 超时；没有单独回零任务。</td></tr>
+            <tr><td>加热控制</td><td>150 ms</td><td>Controller → BoardPort</td><td>原始温度用于安全，显示值单独滤波。</td></tr>
+            <tr><td>压力控制</td><td>20 ms</td><td>Controller → BoardPort</td><td>分阶段运动和 PI 保压。</td></tr>
+            <tr><td>WS2812</td><td>每轮/40 ms 呼吸</td><td>Board_Tick</td><td>TIM16 单次 DMA，忙时恒定状态自动重试。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="state-machine">
+      <h2>5. 业务状态机</h2>
+      <div class="state-map" aria-label="主要状态流">
+        <div class="state primary">BOOT<br><small>启动</small></div><div class="arrow">→</div>
+        <div class="state stop">HOMING<br><small>回零 + 压力去皮</small></div><div class="arrow">→</div>
+        <div class="state safe">IDLE<br><small>允许准备</small></div>
+        <div class="state primary">PREHEAT<br><small>加热/自动准备</small></div><div class="arrow">→</div>
+        <div class="state primary">READY<br><small>纯挤压准备</small></div><div class="arrow">→</div>
+        <div class="state primary">RUNNING<br><small>正式治疗</small></div><div class="arrow">→</div>
+        <div class="state stop">HOMING<br><small>所有结束统一回零</small></div>
+        <div class="state fault">FAULT<br><small>未恢复故障</small></div><div class="arrow">↔</div>
+        <div class="state safe">IDLE<br><small>可恢复故障回零后</small></div><div class="arrow">/</div>
+        <div class="state fault">SHUTDOWN<br><small>回零后断 BATFET</small></div>
+      </div>
+
+      <h3>5.1 开始条件</h3>
+      <ul>
+        <li>状态必须处于 <code>IDLE</code>，模式有效且没有故障。</li>
+        <li>外部充电输入不存在。</li>
+        <li>回零有效；压力模式还要求 ADS1220 去皮有效。</li>
+        <li>眼盾必须是新眼盾、当前会话已使用眼盾，或服务眼盾。</li>
+      </ul>
+      <div class="callout warn">
+        <strong>PREHEAT 的含义</strong>
+        当前状态机不会因为温度达到 40℃自动从 PREHEAT 跳转；正式开始仍由屏幕/按键的启动事件触发。这与“屏幕拥有流程和倒计时”的兼容策略一致，但协议双方必须保持一致。
+      </div>
+
+      <h3>5.2 停止矩阵</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>原因</th><th>立即安全停止</th><th>回零</th><th>计数</th><th>回零后结果</th></tr></thead>
+          <tbody>
+            <tr><td>用户停止</td><td class="yes">是</td><td class="yes">是</td><td class="no">否</td><td>IDLE</td></tr>
+            <tr><td>自然结束 0x8900</td><td class="yes">是</td><td class="yes">是</td><td class="yes">仅一次</td><td>IDLE</td></tr>
+            <tr><td>故障</td><td class="yes">是</td><td class="yes">是</td><td class="no">否</td><td>FAULT 或按故障策略恢复</td></tr>
+            <tr><td>充电插入</td><td class="yes">是</td><td class="yes">是</td><td class="no">否</td><td>保持上电，禁止治疗</td></tr>
+            <tr><td>眼盾拔出</td><td class="yes">是</td><td class="yes">是</td><td class="no">否</td><td>IDLE，闪黄灯三次</td></tr>
+            <tr><td>PWR_SENSE</td><td class="yes">是</td><td class="yes">是</td><td class="no">否</td><td>无外部电源时请求关机</td></tr>
+            <tr><td>低电压确认</td><td class="yes">是</td><td class="yes">是</td><td class="no">否</td><td>SHUTDOWN，写 REG09=0x64</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="modules">
+      <h2>6. 模块职责</h2>
+      <div class="grid two">
+        <article class="card accent-blue">
+          <h3>AppMain</h3>
+          <p>系统业务调度器。只做事件采集、周期轮询和调用，不保存复杂业务逻辑。</p>
+          <span class="tag">串口喂入</span><span class="tag">按键</span><span class="tag">100 ms 眼盾</span><span class="tag">1 s 电源</span><span class="tag">10 ms tick</span>
+        </article>
+        <article class="card accent-violet">
+          <h3>AppController</h3>
+          <p>唯一的治疗状态所有者，保存 <code>AppSnapshot</code> 与内部时序；决定模式切换、眼盾报废、计数、安全停机、回零和故障恢复。</p>
+          <span class="tag">状态机</span><span class="tag">温度安全</span><span class="tag">压力安全</span><span class="tag">电量策略</span>
+        </article>
+        <article class="card accent-green">
+          <h3>ScreenProtocol</h3>
+          <p>解析 13 字节工作帧与 11 字节设置帧，校验 CRC 和帧尾，将命令转换为 Controller API；负责预设和存储命令。</p>
+          <span class="tag">5A A5</span><span class="tag">6A A6</span><span class="tag">CRC16</span><span class="tag">FF FF</span>
+        </article>
+        <article class="card accent-amber">
+          <h3>AppPort</h3>
+          <p>业务层和硬件层之间的依赖倒置接口。测试用假实现替代真实 HAL；固件由 <code>g_port</code> 函数表绑定 BoardPort。</p>
+          <span class="tag">可替换</span><span class="tag">可测试</span><span class="tag">不暴露 HAL</span>
+        </article>
+        <article class="card">
+          <h3>BoardPort</h3>
+          <p>作为薄适配层组装 <code>AppPort</code>，维护按钮/掉电事件，并把初始化、周期调用和 ISR 转发给独立模块。</p>
+          <span class="tag">约 140 行</span><span class="tag">依赖组装</span><span class="tag">接口稳定</span>
+        </article>
+        <article class="card">
+          <h3>TreatmentHw / Drivers</h3>
+          <p>治疗硬件服务集中回零、PID 和压力阶段算法；芯片访问、I2C 恢复、DMA 缓冲和非易失存储由各自驱动维护，模块状态不再堆积于 BoardPort。</p>
+          <span class="tag">单一职责</span><span class="tag">总线隔离</span><span class="tag">行为等价</span>
+        </article>
+        <article class="card">
+          <h3>BQ27441 Gauge</h3>
+          <p>独立维护电量计 Data Memory 配置，保护学习数据，检查 <code>INITCOMP</code> 后才允许 SOC 参与业务判断。</p>
+          <span class="tag">3300 mAh</span><span class="tag">ITPOR</span><span class="tag">回读校验</span>
+        </article>
+        <article class="card">
+          <h3>AppLog / Hooks</h3>
+          <p>USART1 输出带毫秒时间戳的文本日志；断言、栈溢出和 malloc 失败时保存最小现场并停机，避免在损坏栈上格式化日志。</p>
+          <span class="tag">115200</span><span class="tag">阻塞发送</span><span class="tag">GDB 可读现场</span>
+        </article>
+        <article class="card">
+          <h3>Core / HAL</h3>
+          <p>完成时钟和外设初始化，中断回调只把数据或事件交给 BoardPort；FreeRTOS 只创建一个 2048 字节栈的高优先级业务线程。</p>
+          <span class="tag">CubeMX</span><span class="tag">CMSIS-RTOS2</span><span class="tag">STM32 HAL</span>
+        </article>
+      </div>
+    </section>
+
+    <section id="hardware">
+      <h2>7. 硬件与总线映射</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>外设</th><th>连接对象</th><th>关键配置</th><th>所有者/用途</th></tr></thead>
+          <tbody>
+            <tr><td>SPI1</td><td>TMC5130</td><td>Master，分频 16，PA15 CS，PD0 ENN</td><td>回零、前进、保压、回退</td></tr>
+            <tr><td>SPI2</td><td>ADS1220</td><td>Master，分频 16，PB12 CS，PC7 DRDY</td><td>24 位压力采样；等待 DRDY，20 ms 超时</td></tr>
+            <tr><td>I2C1</td><td>BQ25895 + BQ27441</td><td>7 位地址；0x6A / 0x55</td><td>充电状态、充电配置、SOC 和电压</td></tr>
+            <tr><td>I2C2</td><td>TMP112 + 眼盾 EEPROM</td><td>7 位地址；0x48 / 0x50</td><td>温度、眼盾身份与报废标志；带总线恢复</td></tr>
+            <tr><td>USART2</td><td>屏幕</td><td>115200，Receive-to-Idle DMA，128 B DMA + 512 B 环形缓冲</td><td>二进制屏幕协议</td></tr>
+            <tr><td>USART1</td><td>日志串口</td><td>115200，阻塞发送，192 B 格式化缓冲</td><td>COM 文本调试日志</td></tr>
+            <tr><td>TIM14</td><td>加热 PWM</td><td>64 MHz / 64，周期 255</td><td>PB1 加热功率控制</td></tr>
+            <tr><td>TIM16 + DMA</td><td>WS2812</td><td>周期 80，DMA1 CH7，DMA_NORMAL</td><td>15 颗灯珠，单帧发送</td></tr>
+            <tr><td>TIM7</td><td>软件 EEPROM 延时</td><td>1 MHz 计数</td><td>PA8/PA9 位操作存储总线</td></tr>
+            <tr><td>EXTI</td><td>按键/PWR_SENSE</td><td>PB2 falling / PA4 rising</td><td>ISR 只设置事件标志</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>7.1 压力链路</h3>
+      <div class="flow">
+        <div class="flow-node"><strong>压力传感器</strong><small>模拟差分信号</small></div>
+        <div class="flow-node"><strong>ADS1220</strong><small>24 bit，PGA 128</small></div>
+        <div class="flow-node"><strong>去皮零点</strong><small>32点，去除两端各4点</small></div>
+        <div class="flow-node"><strong>mmHg 换算</strong><small>目标分段灵敏度</small></div>
+        <div class="flow-node"><strong>压力阶段机</strong><small>FAST/APPROACH/HOLD/RETRACT</small></div>
+        <div class="flow-node"><strong>TMC5130</strong><small>速度命令</small></div>
+      </div>
+      <p class="caption">去皮在启动回零成功后执行，而不是每次治疗开始时执行。正式治疗要求 <code>pressure_zero_valid=true</code>。</p>
+
+      <h3>7.2 温度链路</h3>
+      <div class="flow">
+        <div class="flow-node"><strong>TMP112</strong><small>I2C2 原始温度</small></div>
+        <div class="flow-node"><strong>原始值</strong><small>PID + 44℃/5s 安全</small></div>
+        <div class="flow-node"><strong>显示滤波</strong><small>α=0.25</small></div>
+        <div class="flow-node"><strong>屏幕刷新</strong><small>300 ms</small></div>
+      </div>
+    </section>
+
+    <section id="screen">
+      <h2>8. 屏幕协议与倒计时</h2>
+      <p>主板兼容现有两类帧，屏幕仍然拥有倒计时。主板保存治疗分钟数，但不会生成第二套倒计时；屏幕发送 <code>0x8900</code> 才被视为自然结束并计数。</p>
+      <div class="grid two">
+        <div class="card">
+          <h3>工作帧</h3>
+          <p><code>5A A5</code> 开头，固定 13 字节，负载通常为 float/u32，末尾 CRC + <code>FF FF</code>。</p>
+          <p><b>主要输入：</b>0x1041 加热准备、0x1005 压力准备、0x1037 自动准备、0x1040/0x1006/0x1036 开始、0x8900 自然结束。</p>
+        </div>
+        <div class="card">
+          <h3>设置帧</h3>
+          <p><code>6A A6</code> 开头，固定 11 字节，负载通常为 u16，处理预设选择、温度/压力/时间存储和擦除命令。</p>
+          <p><b>开机同步：</b>0x1050 → 0x00AD 应答，同时发送软件版本、配置和预设。</p>
+        </div>
+      </div>
+      <div class="callout warn">
+        <strong>故障码发送当前关闭</strong>
+        <code>APP_ENABLE_SCREEN_FAULT_REPORT=0</code>，因此 0x2070 故障帧被宏屏蔽；故障仍保留在本地状态和日志中。
+      </div>
+    </section>
+
+    <section id="charging">
+      <h2>9. 充电、电量与灯光</h2>
+      <h3>9.1 两颗芯片职责</h3>
+      <div class="grid two">
+        <div class="card accent-blue">
+          <h3>BQ25895：充电过程真值</h3>
+          <ul>
+            <li>检测外部 5 V：VBUS_GD 或 PG_STAT。</li>
+            <li><code>CHRG_STAT=3</code> 才是真正 Charge Done。</li>
+            <li>目标约 4.208 V，充电电流约 1.984 A，终止电流 64 mA。</li>
+            <li>Charge Done 仍视为“外部电源存在”，继续禁止治疗。</li>
+          </ul>
+        </div>
+        <div class="card accent-green">
+          <h3>BQ27441：电量显示与低电量</h3>
+          <ul>
+            <li>提供 SOC 百分比和电池电压。</li>
+            <li>SOC=100% 可能早于 BQ25895 Charge Done。</li>
+            <li><code>INITCOMP</code> 前的临时 SOC=0 不参与判断。</li>
+            <li>SOC≤1% 提示；无外部电源且≤3150mV连续5次才关机。</li>
+          </ul>
+        </div>
+      </div>
+
+      <h3>9.2 LED 优先级</h3>
+      <ol class="priority">
+        <li><b>满电</b>：外部电源存在且 CHRG_STAT=3，白色常亮。</li>
+        <li><b>充电</b>：白色呼吸，6 秒周期，亮度 4～72，40 ms 更新。</li>
+        <li><b>故障/眼盾拔出提示</b>：黄色 0.5 秒节拍，闪 3 次；不永久锁定灯光。</li>
+        <li><b>低电量</b>：不充电时黄色闪烁。</li>
+        <li><b>普通状态</b>：白色常亮。</li>
+      </ol>
+      <p class="caption">充电和满电会取消正在等待的黄色闪烁；恒定颜色在 TIM16 DMA 忙时保留更新请求并在下一轮重试。</p>
+    </section>
+
+    <section id="safety">
+      <h2>10. 安全策略</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>保护</th><th>触发条件</th><th>软件动作</th><th>恢复</th></tr></thead>
+          <tbody>
+            <tr><td>超温</td><td>原始温度连续 5 s ≥ 44℃</td><td>关加热/停电机、回零、故障</td><td>当前代码在回零成功后自动清除</td></tr>
+            <tr><td>超压</td><td>压力 ≥ 650 mmHg</td><td>先停电机，再记录原始值并回零</td><td>去皮有效且回零成功后自动清除</td></tr>
+            <tr><td>TMP112 通讯</td><td>治疗中读取失败</td><td>关闭危险输出、回零、故障</td><td>眼盾重新确认且回零有效后清除</td></tr>
+            <tr><td>ADS1220 通讯</td><td>DRDY/SPI 失败</td><td>停止压力控制并进入故障</td><td>当前未自动恢复</td></tr>
+            <tr><td>回零</td><td>8 s 未检测参考位或持续 SPI 失败</td><td>停电机、关闭驱动、MOTOR_HOME</td><td>当前未自动恢复</td></tr>
+            <tr><td>眼盾拔出</td><td>治疗中连续3次确认 absent</td><td>安全停止、回零、黄灯3次</td><td>不锁故障；需有效眼盾才能再开始</td></tr>
+            <tr><td>充电插入</td><td>VBUS_GD/PG 有效</td><td>中断治疗并回零，保持设备开启</td><td>拔掉外部电源后可重新准备</td></tr>
+            <tr><td>临界低电量</td><td>≤3150mV，1s采样连续5次</td><td>回零后 BATFET 关断</td><td>重新供电/充电</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout danger">
+        <strong>文档与代码差异</strong>
+        <code>business_rules.md</code> 写着“故障保持锁存”，但当前代码会在回零成功后自动清除超温和超压，也会在眼盾通讯恢复后清除 TMP112 通讯故障。正式发布前应明确产品决策并统一文档、测试和代码。
+      </div>
+    </section>
+
+    <section id="interrupts">
+      <h2>11. 中断、并发与资源所有权</h2>
+      <div class="grid two">
+        <div class="card accent-green">
+          <h3>现在的规则</h3>
+          <ul>
+            <li>UART2 ISR：复制 DMA 数据到环形缓冲并重启接收。</li>
+            <li>按键/PWR ISR：只设置布尔事件标志。</li>
+            <li>TIM16 DMA 完成：停止 DMA 并释放 WS2812 ready 标志。</li>
+            <li>所有 TMC5130 SPI 操作只从应用任务路径调用。</li>
+            <li>不删除、不挂起、不恢复业务任务。</li>
+          </ul>
+        </div>
+        <div class="card accent-amber">
+          <h3>为什么能避免旧故障</h3>
+          <p>旧故障来自任务在 <code>HAL_SPI_Transmit()</code> 内被强制删除，HAL/SPI 状态无法清理。v2 回零是 <code>home_begin + home_poll</code> 非阻塞状态机，与压力控制共享同一个任务所有者，因此不存在异步删除 SPI 调用栈。</p>
+        </div>
+      </div>
+      <div class="callout warn">
+        <strong>仍需注意</strong>
+        USART1 日志使用最长 30 ms 的阻塞发送；虽然只有一个业务任务，密集日志仍可能扰动 20 ms 压力控制节拍。高频路径应继续限频，后续可改为 DMA 日志队列。
+      </div>
+    </section>
+
+    <section id="build">
+      <h2>12. 构建、烧录与调试</h2>
+      <div class="grid two">
+        <div class="card">
+          <h3>CMake 构建</h3>
+          <pre>cmake --preset Debug
+cmake --build build/Debug --parallel</pre>
+          <p>输出：<code>.elf</code>、<code>.hex</code>、<code>.bin</code>。当前使用 GNU Arm Embedded 工具链和 Ninja。</p>
+        </div>
+        <div class="card">
+          <h3>VS Code 调试</h3>
+          <p><code>.vscode/launch.json</code> 提供 J-Link 和 ST-Link 两套直接 Cortex-Debug 配置，均不启用 FreeRTOS 感知。</p>
+          <p>断言/栈溢出时用 GDB 查看 <code>g_assert_file</code>、<code>g_assert_line</code>、<code>g_stack_overflow_name</code> 等保留变量。</p>
+        </div>
+      </div>
+      <h3>测试现状</h3>
+      <p><code>tests/test_app_controller.c</code> 已覆盖眼盾报废时机、重新插入限制、自然结束计数、充电中断、满电 LED、低电量回零关机、故障和外部电源防误关机。它目前尚未接入 CMake/CTest，仍需手工用本机 C 编译器执行。</p>
+    </section>
+
+    <section id="risks">
+      <h2>13. 当前风险与整改建议</h2>
+      <p class="section-intro">以下不是说当前代码不能运行，而是指出下一轮重构最值得优先处理的位置。</p>
+      <div class="risk-list">
+        <div class="risk">
+          <div class="risk-level high">高</div>
+          <div class="risk-body"><strong>Board_Init 失败后永久停在循环</strong><span>BQ27441 或 ADS1220 一次启动失败就不再恢复，也没有看门狗重启。建议加入分级初始化、退避重试、故障灯和明确的降级状态。</span></div>
+        </div>
+        <div class="risk">
+          <div class="risk-level high">高</div>
+          <div class="risk-body"><strong>I2C1 缺少与 I2C2 同等级的恢复</strong><span>眼盾总线已有 SCL 脉冲恢复和 HAL 重建；BQ25895/BQ27441 仍直接调用 HAL I2C。充电/电量总线卡死时可能长期失去电源判断。</span></div>
+        </div>
+        <div class="risk">
+          <div class="risk-level low">低</div>
+          <div class="risk-body"><strong>驱动拆分后的接口仍以板级单例为主</strong><span>board_port.c 已由约 1300 行降至约 140 行，但硬件模块仍使用全局 HAL 句柄。若以后需要驱动级主机测试，可继续把 SPI/I2C 访问注入为总线接口。</span></div>
+        </div>
+        <div class="risk">
+          <div class="risk-level medium">中</div>
+          <div class="risk-body"><strong>测试没有纳入构建流水线</strong><span>状态机测试存在但 CMake 不执行。建议新增 host-test target 和 CTest，让每次改状态机都自动验证。</span></div>
+        </div>
+        <div class="risk">
+          <div class="risk-level medium">中</div>
+          <div class="risk-body"><strong>屏幕命令常量分散</strong><span>命令号同时散落在 screen_protocol.c 与 app_controller.c，容易出现重复或含义漂移。建议集中到 screen_commands.h 并为收发方向命名。</span></div>
+        </div>
+        <div class="risk">
+          <div class="risk-level medium">中</div>
+          <div class="risk-body"><strong>定义但未启用的安全功能</strong><span><code>APP_SCREEN_TIMEOUT_MS</code> 当前没有实际使用；IWDG 也未在主流程启用。需要决定是实现还是删除，避免产生“已有保护”的误解。</span></div>
+        </div>
+        <div class="risk">
+          <div class="risk-level medium">中</div>
+          <div class="risk-body"><strong>日志会阻塞实时控制</strong><span>USART1 同步发送最长等待 30 ms，高于压力控制 20 ms 周期。建议使用 DMA 环形队列并设置丢弃计数。</span></div>
+        </div>
+        <div class="risk">
+          <div class="risk-level low">低</div>
+          <div class="risk-body"><strong>中断文件保留大量 #if 0 旧代码</strong><span>不影响当前执行，但降低审查清晰度，且重新生成 CubeMX 时容易产生重复回调误判。建议在确认无用后清理。</span></div>
+        </div>
+        <div class="risk">
+          <div class="risk-level low">低</div>
+          <div class="risk-body"><strong>当前工作区尚未形成干净提交</strong><span>master 上存在多项已修改和未跟踪源文件。建议完成台架验证后建立清晰提交，避免后续无法准确回溯充电、LED、I2C 和状态机改动。</span></div>
+        </div>
+      </div>
+
+      <h3>建议的下一步重构顺序</h3>
+      <ol class="priority">
+        <li>先给 I2C1 加总线恢复、连续失败计数和安全降级，补齐电源链路可靠性。</li>
+        <li>把现有状态机测试接入 CMake/CTest，并为充电、眼盾拔插和故障恢复补测试。</li>
+        <li>拆分 BoardPort，但保持 AppPort 接口和业务行为不变，避免一次大改业务与驱动。</li>
+        <li>集中屏幕命令和存储地址定义，生成协议/存储文档或至少建立单一头文件。</li>
+        <li>最后将日志改为非阻塞 DMA，并评估 IWDG 与启动失败恢复策略。</li>
+      </ol>
+    </section>
+
+    <section id="files">
+      <h2>14. 推荐阅读路线</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>顺序</th><th>文件</th><th>阅读目标</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td><code>docs/business_rules.md</code></td><td>先理解已确认业务规则，再对照本文指出的差异。</td></tr>
+            <tr><td>2</td><td><code>App/Inc/app_types.h</code></td><td>掌握全部状态、模式、停止原因和故障码。</td></tr>
+            <tr><td>3</td><td><code>App/Src/app_controller.c</code></td><td>阅读准备、开始、停止、回零、加热和压力 tick。</td></tr>
+            <tr><td>4</td><td><code>App/Inc/app_port.h</code></td><td>理解业务层期望板级提供哪些能力。</td></tr>
+            <tr><td>5</td><td><code>App/Src/app_main.c</code></td><td>理解事件顺序和各采样周期。</td></tr>
+            <tr><td>6</td><td><code>App/Src/screen_protocol.c</code></td><td>把屏幕命令映射到 Controller API。</td></tr>
+            <tr><td>7</td><td><code>Bsp/Src/board_port.c</code></td><td>理解 AppPort 如何绑定独立硬件模块，以及启动和 ISR 转发关系。</td></tr>
+            <tr><td>8</td><td><code>Bsp/Src/treatment_hw.c</code></td><td>理解回零、加热 PID 和压力阶段控制如何组合芯片驱动。</td></tr>
+            <tr><td>9</td><td><code>Bsp/Src/*_driver.c</code></td><td>按具体外设查看寄存器、总线恢复、DMA 和存储时序。</td></tr>
+            <tr><td>10</td><td><code>Bsp/Src/bq27441_gauge.c</code></td><td>理解电量计初始化、ITPOR、INITCOMP 和配置保护。</td></tr>
+            <tr><td>11</td><td><code>Core/Src/app_freertos.c</code></td><td>确认系统只创建一个业务线程。</td></tr>
+            <tr><td>12</td><td><code>tests/test_app_controller.c</code></td><td>从测试反向理解业务不变量。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer>
+      本文档根据 2026-08-19 当前工作区静态分析生成。硬件寄存器配置、状态和风险描述应在每次关键改动后同步更新。
+    </footer>
+  </main>
+</div>
+</body>
+</html>

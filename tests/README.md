@@ -10,6 +10,9 @@
 - user stop, charging, fault, power loss and critical battery all enter homing;
 - external power blocks treatment;
 - critical battery performs homing before requesting the hardware power latch off.
+- a user/natural stop can cooperatively cancel homing and reuse the previous
+  valid pressure zero for a quick second treatment;
+- fault and power-related stops cannot use that quick-resume path.
 
 The firmware build compiles the same `App/Src/app_controller.c`. A native C compiler
 can run this test by compiling the test together with that source and including

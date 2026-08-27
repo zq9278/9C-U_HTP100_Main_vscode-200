@@ -45,6 +45,8 @@ void MX_I2C2_Init(void);
 
 /* USER CODE BEGIN Prototypes */
 
+HAL_StatusTypeDef I2C2_BusRecover(void);
+
 /* USER CODE END Prototypes */
 
 #ifdef __cplusplus

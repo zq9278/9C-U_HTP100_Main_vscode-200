@@ -27,6 +27,7 @@ typedef struct {
     void (*pressure_control_stop)(void);
     bool (*home_begin)(void);
     AppAsyncResult (*home_poll)(void);
+    void (*home_cancel)(void);
     bool (*pressure_zero_calibrate)(void);
     AppEyeState (*eye_read_state)(void);
     bool (*eye_mark_consumed)(void);

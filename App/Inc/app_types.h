@@ -70,6 +70,7 @@ typedef struct {
     AppFault fault;
     AppTreatmentSettings settings;
     bool charging;
+    bool charge_full;
     bool low_battery_warning;
     bool home_valid;
     bool pressure_zero_valid;

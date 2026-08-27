@@ -4,6 +4,7 @@
 
 #include "app_config.h"
 #include "app_controller.h"
+#include "app_log.h"
 
 #define WORK_HEADER_0      0x5AU
 #define WORK_HEADER_1      0xA5U
@@ -42,8 +43,13 @@ static void send_preset(uint16_t preset, bool edit_response)
         runtime = AppController_StorageRead((uint8_t)(base + 4U),
                                             preset == 1U ? 2U : preset == 2U ? 3U : 4U);
     }
-    ScreenProtocol_SendU16(edit_response ? 0x00A9U : 0x00A4U, pressure);
-    ScreenProtocol_SendU16(edit_response ? 0x00A8U : 0x00A5U, temperature);
+    if (edit_response) {
+        ScreenProtocol_SendU16(0x00A9U, pressure);
+        ScreenProtocol_SendU16(0x00A8U, temperature);
+    } else {
+        ScreenProtocol_SendU16(0x00A4U, temperature);
+        ScreenProtocol_SendU16(0x00A5U, pressure);
+    }
     ScreenProtocol_SendU16(edit_response ? 0x00AAU : 0x00A6U, runtime);
 }
 
@@ -83,6 +89,8 @@ static void handle_work_frame(const uint8_t *frame)
     float value = 0.0f;
 
     memcpy(&value, &frame[5], sizeof(value));
+    LOGI("[Screen RX] cmd=0x%04X value_x100=%ld", command,
+         (long)(value * 100.0f));
     switch (command) {
     case 0x8900U:
         AppController_Stop(APP_STOP_NATURAL);
@@ -111,6 +119,7 @@ static void handle_work_frame(const uint8_t *frame)
         AppController_ScreenBoot();
         ScreenProtocol_SendU32(0x2060U, APP_SOFTWARE_VERSION);
         ScreenProtocol_SendU16(0x00ABU, AppController_StorageRead(0x06U, 0U));
+        send_preset(AppController_StorageRead(0xFCU, 0U), false);
         break;
     case 0x1051U:
     case 0x1052U:
@@ -134,6 +143,7 @@ static void handle_prepare_frame(const uint8_t *frame)
     uint16_t command = frame_command(frame);
     uint16_t value = read_u16_le(&frame[5]);
 
+    LOGI("[Screen RX] prepare cmd=0x%04X value=%u", command, (unsigned)value);
     switch (command) {
     case 0x1042U:
         g_edit_preset = value;

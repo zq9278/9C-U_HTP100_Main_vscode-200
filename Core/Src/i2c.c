@@ -293,5 +293,50 @@ void I2C2_HardwareReset(void) {
   HAL_I2C_Init(&hi2c2);
 }
 
+HAL_StatusTypeDef I2C2_BusRecover(void) {
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  HAL_StatusTypeDef status;
+  uint8_t pulse;
+
+  /* A shield can be removed halfway through a byte. Resetting only the I2C
+   * peripheral cannot release a slave that is still holding SDA low. */
+  (void)HAL_I2C_DeInit(&hi2c2);
+
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+  GPIO_InitStruct.Pin = EYE_SCL_Pin | EYE_SDA_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+  HAL_GPIO_WritePin(EYE_SCL_GPIO_Port, EYE_SCL_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(EYE_SDA_GPIO_Port, EYE_SDA_Pin, GPIO_PIN_SET);
+  HAL_Delay(1U);
+
+  for (pulse = 0U;
+       pulse < 9U && HAL_GPIO_ReadPin(EYE_SDA_GPIO_Port, EYE_SDA_Pin) == GPIO_PIN_RESET;
+       ++pulse) {
+    HAL_GPIO_WritePin(EYE_SCL_GPIO_Port, EYE_SCL_Pin, GPIO_PIN_RESET);
+    HAL_Delay(1U);
+    HAL_GPIO_WritePin(EYE_SCL_GPIO_Port, EYE_SCL_Pin, GPIO_PIN_SET);
+    HAL_Delay(1U);
+  }
+
+  /* Generate STOP while GPIO owns the pins: SDA low, SCL high, SDA high. */
+  HAL_GPIO_WritePin(EYE_SDA_GPIO_Port, EYE_SDA_Pin, GPIO_PIN_RESET);
+  HAL_Delay(1U);
+  HAL_GPIO_WritePin(EYE_SCL_GPIO_Port, EYE_SCL_Pin, GPIO_PIN_SET);
+  HAL_Delay(1U);
+  HAL_GPIO_WritePin(EYE_SDA_GPIO_Port, EYE_SDA_Pin, GPIO_PIN_SET);
+  HAL_Delay(1U);
+
+  status = HAL_I2C_Init(&hi2c2);
+  if (status == HAL_OK) {
+    status = HAL_I2CEx_ConfigAnalogFilter(&hi2c2, I2C_ANALOGFILTER_ENABLE);
+  }
+  if (status == HAL_OK) {
+    status = HAL_I2CEx_ConfigDigitalFilter(&hi2c2, 0U);
+  }
+  return status;
+}
 
 /* USER CODE END 1 */

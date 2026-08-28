@@ -2,7 +2,11 @@
 
 ## Eye shield
 
-- A shield is usable only when TMP112 responds and its EEPROM usage marker is `0xFFFF`.
+- Product identity, version and the eye-shield fuse switch are centralized in
+  `App/Inc/product_config.h`. `PRODUCT_EYE_FUSE_ENABLED=1U` keeps the production
+  consumed-marker behavior; `0U` neither writes nor enforces that marker.
+- With eye-shield fusing enabled, a shield is usable only when TMP112 responds
+  and its EEPROM usage marker is `0xFFFF`.
 - Preheating does not consume the shield.
 - When formal heat or pressure treatment is started, the marker is immediately
   written as consumed and verified by readback.
@@ -10,8 +14,10 @@
   written. The current treatment may finish, and another treatment may start after
   homing without writing the marker again.
 - Once removal is observed, reinserting that shield exposes its consumed marker and
-  treatment is rejected. A controller restart also reloads the marker, so an already
-  marked shield is rejected after restart even when it was not physically removed.
+  treatment is rejected. The LCD receives the same eye-shield-offline value for a
+  consumed shield as for a physically absent shield. A controller restart also reloads
+  the marker, so an already marked shield is rejected after restart even when it was
+  not physically removed.
 - The service-shield marker `0x0202` remains exempt for production/service work.
 
 ## Countdown compatibility

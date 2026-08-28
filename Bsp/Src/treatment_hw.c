@@ -1,5 +1,6 @@
 #include "treatment_hw.h"
 
+#include <math.h>
 #include <stdint.h>
 
 #include "ads1220_driver.h"
@@ -16,6 +17,18 @@ typedef enum {
     PRESS_STAGE_HOLD,
     PRESS_STAGE_RETRACT
 } PressureStage;
+
+#define HEAT_PID_DEFAULT_KP 30.0f
+#define HEAT_PID_DEFAULT_KI 5.0f
+#define HEAT_PID_DEFAULT_KD 5.0f
+#define HEAT_PID_MAX_KP     100.0f
+#define HEAT_PID_MAX_KI     50.0f
+#define HEAT_PID_MAX_KD     20.0f
+#define HEAT_PID_DT_S       0.15f
+#define HEAT_PID_MAX_I      20.0f
+#define HEAT_PID_MIN_I      (-20.0f)
+#define HEAT_PID_MAX_I_OUT  40.0f
+#define HEAT_PID_MIN_I_OUT  (-40.0f)
 
 static bool g_home_active;
 static uint32_t g_home_started_ms;
@@ -35,10 +48,18 @@ static bool g_pressure_active;
 
 static float g_heat_integral;
 static float g_heat_previous_error;
+static float g_heat_kp;
+static float g_heat_ki;
+static float g_heat_kd;
+static float g_heat_power_percent;
+static bool g_heat_previous_valid;
 static bool g_heat_pwm_started;
 
 void TreatmentHw_Init(void)
 {
+    g_heat_kp = HEAT_PID_DEFAULT_KP;
+    g_heat_ki = HEAT_PID_DEFAULT_KI;
+    g_heat_kd = HEAT_PID_DEFAULT_KD;
     Tmc5130Driver_Init();
     TreatmentHw_SafeOutputsOff();
 }
@@ -47,6 +68,10 @@ void TreatmentHw_SafeOutputsOff(void)
 {
     __HAL_TIM_SET_COMPARE(&htim14, TIM_CHANNEL_1, 0U);
     (void)HAL_TIM_PWM_Stop(&htim14, TIM_CHANNEL_1);
+    g_heat_integral = 0.0f;
+    g_heat_previous_error = 0.0f;
+    g_heat_power_percent = 0.0f;
+    g_heat_previous_valid = false;
     g_heat_pwm_started = false;
     Tmc5130Driver_Stop();
 }
@@ -55,6 +80,8 @@ bool TreatmentHw_HeaterControl(float target_c, float *measured_c)
 {
     float error;
     float derivative;
+    float next_integral;
+    float integral_output;
     float pwm;
 
     if (!EyeDriver_ReadTemperature(measured_c)) {
@@ -62,20 +89,37 @@ bool TreatmentHw_HeaterControl(float target_c, float *measured_c)
         return false;
     }
     error = target_c - *measured_c;
-    if (error <= 0.0f) {
-        g_heat_integral = 0.0f;
-        pwm = 0.0f;
-    } else if (error > 10.0f) {
-        pwm = 12.0f * error;
-        g_heat_integral = 0.0f;
-    } else {
-        g_heat_integral += error * 0.15f;
-        if (g_heat_integral > 100.0f) {
-            g_heat_integral = 100.0f;
-        }
-        derivative = (error - g_heat_previous_error) / 0.15f;
-        pwm = 15.0f * error + 2.0f * g_heat_integral + 0.5f * derivative;
+    /* Temporarily disabled for PID tuning: reaching the target must not
+     * discard the holding-power integral and force PWM to zero.
+     *
+     * if (error <= 0.0f) {
+     *     g_heat_integral = 0.0f;
+     *     g_heat_previous_valid = false;
+     *     pwm = 0.0f;
+     * } else
+     */
+    derivative = g_heat_previous_valid ?
+                 (error - g_heat_previous_error) / HEAT_PID_DT_S : 0.0f;
+    next_integral = g_heat_integral + error * HEAT_PID_DT_S;
+    if (next_integral > HEAT_PID_MAX_I) next_integral = HEAT_PID_MAX_I;
+    if (next_integral < HEAT_PID_MIN_I) next_integral = HEAT_PID_MIN_I;
+    integral_output = g_heat_ki * next_integral;
+    if (integral_output > HEAT_PID_MAX_I_OUT) {
+        integral_output = HEAT_PID_MAX_I_OUT;
+        next_integral = integral_output / g_heat_ki;
     }
+    if (integral_output < HEAT_PID_MIN_I_OUT) {
+        integral_output = HEAT_PID_MIN_I_OUT;
+        next_integral = integral_output / g_heat_ki;
+    }
+    pwm = g_heat_kp * error + integral_output + g_heat_kd * derivative;
+    /* Integrate only when it moves a saturated output back toward range. */
+    if ((pwm > 0.0f && pwm < 254.0f) ||
+        (pwm <= 0.0f && error > 0.0f) ||
+        (pwm >= 254.0f && error < 0.0f)) {
+        g_heat_integral = next_integral;
+    }
+    g_heat_previous_valid = true;
     g_heat_previous_error = error;
     if (pwm < 0.0f) pwm = 0.0f;
     if (pwm > 254.0f) pwm = 254.0f;
@@ -83,7 +127,38 @@ bool TreatmentHw_HeaterControl(float target_c, float *measured_c)
     if (!g_heat_pwm_started) {
         g_heat_pwm_started = HAL_TIM_PWM_Start(&htim14, TIM_CHANNEL_1) == HAL_OK;
     }
+    g_heat_power_percent = g_heat_pwm_started ? pwm * (100.0f / 254.0f) : 0.0f;
     return g_heat_pwm_started;
+}
+
+bool TreatmentHw_SetHeatPid(float kp, float ki, float kd)
+{
+    if (!isfinite(kp) || !isfinite(ki) || !isfinite(kd) ||
+        kp < 0.0f || kp > HEAT_PID_MAX_KP ||
+        ki < 0.0f || ki > HEAT_PID_MAX_KI ||
+        kd < 0.0f || kd > HEAT_PID_MAX_KD) {
+        return false;
+    }
+    g_heat_kp = kp;
+    g_heat_ki = ki;
+    g_heat_kd = kd;
+    g_heat_integral = 0.0f;
+    g_heat_previous_error = 0.0f;
+    g_heat_previous_valid = false;
+    return true;
+}
+
+void TreatmentHw_GetHeatPid(float *kp, float *ki, float *kd)
+{
+    if (kp != NULL) *kp = g_heat_kp;
+    if (ki != NULL) *ki = g_heat_ki;
+    if (kd != NULL) *kd = g_heat_kd;
+}
+
+void TreatmentHw_HeatTelemetry(float *power_percent, float *integral_output)
+{
+    if (power_percent != NULL) *power_percent = g_heat_power_percent;
+    if (integral_output != NULL) *integral_output = g_heat_ki * g_heat_integral;
 }
 
 bool TreatmentHw_HomeBegin(void)

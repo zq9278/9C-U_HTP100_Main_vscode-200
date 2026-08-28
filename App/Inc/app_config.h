@@ -35,6 +35,4 @@
 /* Set to 1U to send fault code frames (0x2070) to the LCD. */
 #define APP_ENABLE_SCREEN_FAULT_REPORT    0U
 
-#define APP_SOFTWARE_VERSION              20260819UL
-
 #endif

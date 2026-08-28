@@ -19,6 +19,8 @@ static unsigned eye_consume_count;
 static unsigned treatment_count;
 static unsigned power_off_count;
 static unsigned pressure_start_count;
+static unsigned eye_screen_count;
+static float last_eye_screen_value;
 static AppLedState last_led;
 
 static uint32_t now_ms(void) { return fake_now; }
@@ -42,7 +44,13 @@ static void screen_boot_sync(void) { }
 static uint16_t storage_read(uint8_t address, uint16_t fallback) { (void)address; return fallback; }
 static bool storage_write(uint8_t address, uint16_t value) { (void)address; (void)value; return true; }
 static void storage_erase(void) { }
-static void screen_float(uint16_t command, float value) { (void)command; (void)value; }
+static void screen_float(uint16_t command, float value)
+{
+    if (command == 0x2055U) {
+        eye_screen_count++;
+        last_eye_screen_value = value;
+    }
+}
 static void screen_u16(uint16_t command, uint16_t value) { (void)command; (void)value; }
 static void screen_u32(uint16_t command, uint32_t value) { (void)command; (void)value; }
 static void fault(AppFault value) { (void)value; }
@@ -61,6 +69,8 @@ static void reset_fixture(void)
     fake_eye = APP_EYE_NEW;
     home_begin_count = home_poll_count = home_cancel_count = eye_consume_count = 0U;
     treatment_count = power_off_count = pressure_start_count = 0U;
+    eye_screen_count = 0U;
+    last_eye_screen_value = -1.0f;
     last_led = APP_LED_IDLE;
     AppController_Init(&port);
     fake_home_result = APP_ASYNC_OK;
@@ -102,6 +112,8 @@ static void test_reinserted_consumed_eye_is_rejected(void)
     AppController_SetEyeState(APP_EYE_ABSENT);
     AppController_SetEyeState(APP_EYE_CONSUMED);
     assert(AppController_Status()->eye == APP_EYE_CONSUMED);
+    assert(eye_screen_count >= 2U);
+    assert(last_eye_screen_value == 0.0f);
     assert(!AppController_Prepare(APP_MODE_HEAT, 0.0f));
 }
 
@@ -113,6 +125,19 @@ static void test_only_natural_finish_counts(void)
     AppController_Stop(APP_STOP_USER);
     assert(treatment_count == 0U);
     assert(home_begin_count == 2U);
+}
+
+static void test_temperature_telemetry_tracks_heat_sample(void)
+{
+    reset_fixture();
+    assert(AppController_Prepare(APP_MODE_AUTO, 350.0f));
+    assert(!AppController_Status()->temperature_valid);
+    fake_now = 150U;
+    AppController_Tick();
+    assert(AppController_Status()->temperature_valid);
+    assert(AppController_Status()->measured_temperature_c == 40.0f);
+    AppController_Stop(APP_STOP_USER);
+    assert(!AppController_Status()->temperature_valid);
 }
 
 static void test_charging_blocks_and_interrupts_treatment(void)
@@ -220,6 +245,7 @@ int main(void)
     test_eye_is_consumed_only_at_formal_start();
     test_reinserted_consumed_eye_is_rejected();
     test_only_natural_finish_counts();
+    test_temperature_telemetry_tracks_heat_sample();
     test_charging_blocks_and_interrupts_treatment();
     test_charge_done_uses_full_led();
     test_low_voltage_homes_then_cuts_power();

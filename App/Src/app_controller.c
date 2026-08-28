@@ -5,6 +5,7 @@
 
 #include "app_config.h"
 #include "app_log.h"
+#include "product_config.h"
 
 #define SCREEN_TEMP_HEAT             0x2041U
 #define SCREEN_TEMP_AUTO             0x2037U
@@ -57,6 +58,12 @@ static bool mode_uses_heat(AppMode mode)
 static bool mode_uses_pressure(AppMode mode)
 {
     return mode == APP_MODE_PRESSURE || mode == APP_MODE_AUTO;
+}
+
+static bool eye_is_screen_online(AppEyeState eye)
+{
+    return eye == APP_EYE_NEW || eye == APP_EYE_IN_USE ||
+           eye == APP_EYE_SERVICE;
 }
 
 static bool treatment_is_open(void)
@@ -149,6 +156,7 @@ static void begin_home(void)
     g_app.status.state = APP_STATE_HOMING;
     g_app.status.home_valid = false;
     g_app.status.pressure_zero_valid = false;
+    g_app.status.temperature_valid = false;
     g_app.home_started = false;
 
     if (g_app.port != NULL && g_app.port->home_begin != NULL && g_app.port->home_begin()) {
@@ -171,14 +179,20 @@ static bool consume_eye_at_first_actuation(void)
     if (g_app.status.eye == APP_EYE_SERVICE || g_app.status.eye == APP_EYE_IN_USE) {
         return true;
     }
-    if (g_app.status.eye != APP_EYE_NEW || g_app.port == NULL ||
-        g_app.port->eye_mark_consumed == NULL || !g_app.port->eye_mark_consumed()) {
+    if (g_app.status.eye != APP_EYE_NEW) {
         AppController_RaiseFault(APP_FAULT_TMP112_COMM);
         return false;
     }
-    /* Keep this insertion session usable; reinsertion will expose the consumed marker. */
+#if PRODUCT_EYE_FUSE_ENABLED
+    if (g_app.port == NULL || g_app.port->eye_mark_consumed == NULL ||
+        !g_app.port->eye_mark_consumed()) {
+        AppController_RaiseFault(APP_FAULT_TMP112_COMM);
+        return false;
+    }
+#endif
+    /* Keep the current uninterrupted insertion session usable. */
     g_app.status.eye = APP_EYE_IN_USE;
-    if (g_app.port->screen_float != NULL) {
+    if (g_app.port != NULL && g_app.port->screen_float != NULL) {
         g_app.port->screen_float(SCREEN_NEW_EYE, 0.0f);
     }
     return true;
@@ -247,6 +261,7 @@ bool AppController_Prepare(AppMode mode, float pressure_mmhg)
     g_app.status.fault = APP_FAULT_NONE;
     g_app.count_recorded = false;
     g_app.display_temperature_valid = false;
+    g_app.status.temperature_valid = false;
     if (pressure_mmhg > 0.0f) {
         g_app.status.settings.pressure_mmhg = pressure_mmhg;
     }
@@ -369,7 +384,8 @@ void AppController_SetEyeState(AppEyeState eye)
     }
     if ((!g_app.eye_screen_synced || changed) &&
         g_app.port != NULL && g_app.port->screen_float != NULL) {
-        g_app.port->screen_float(SCREEN_EYE_STATE, eye != APP_EYE_ABSENT ? 1.0f : 0.0f);
+        g_app.port->screen_float(SCREEN_EYE_STATE,
+                                eye_is_screen_online(eye) ? 1.0f : 0.0f);
         g_app.eye_screen_synced = true;
         if (eye == APP_EYE_NEW && changed) {
             g_app.port->screen_float(SCREEN_NEW_EYE, 0.0f);
@@ -599,9 +615,12 @@ static void tick_heat(uint32_t now)
                                                      g_app.status.settings.temperature_c;
     if (g_app.port == NULL || g_app.port->heater_control == NULL ||
         !g_app.port->heater_control(target, &measured)) {
+        g_app.status.temperature_valid = false;
         AppController_RaiseFault(APP_FAULT_TMP112_COMM);
         return;
     }
+    g_app.status.measured_temperature_c = measured;
+    g_app.status.temperature_valid = true;
     if (measured >= APP_MAX_SAFE_TEMPERATURE_C) {
         if (!g_app.over_temperature_timing) {
             g_app.over_temperature_timing = true;

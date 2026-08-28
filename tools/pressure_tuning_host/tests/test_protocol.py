@@ -4,8 +4,8 @@ import unittest
 
 from protocol import (
     CMD_HELLO, PROFILE_KEYS, RSP_TELEMETRY, FrameParser, build_frame,
-    build_screen_work_frame, crc16, decode_profile, decode_telemetry, encode_profile,
-    encode_profile_field,
+    build_screen_work_frame, crc16, decode_heat_pid, decode_profile,
+    decode_telemetry, encode_heat_pid, encode_profile, encode_profile_field,
 )
 
 
@@ -39,6 +39,12 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual((profile, field), (2, 9))
         self.assertAlmostEqual(value, 123.5)
 
+    def test_heat_pid_round_trip(self):
+        decoded = decode_heat_pid(encode_heat_pid(30.0, 5.0, 5.0))
+        self.assertAlmostEqual(decoded["kp"], 30.0)
+        self.assertAlmostEqual(decoded["ki"], 5.0)
+        self.assertAlmostEqual(decoded["kd"], 5.0)
+
     def test_telemetry_layout(self):
         payload = struct.pack("<IffiiBBBHBB", 123, 350.0, 348.5, 1000, 900,
                               2, 1, 5, 0x0402, 0, 1)
@@ -57,6 +63,26 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(data["home_valid"], 1)
         self.assertEqual(data["debug_mode"], 1)
         self.assertEqual(data["battery_mv"], 4117)
+
+    def test_temperature_telemetry_layout(self):
+        payload = struct.pack("<IffiiBBBHBB", 123, 350.0, 348.5, 1000, 900,
+                              2, 1, 5, 0, 1, 1)
+        payload += struct.pack("<BBBBBHH", 2, 1, 1, 0, 1, 88, 4117)
+        payload += struct.pack("<ffB", 42.5, 41.875, 1)
+        data = decode_telemetry(payload)
+        self.assertAlmostEqual(data["target_temperature_c"], 42.5)
+        self.assertAlmostEqual(data["temperature_c"], 41.875)
+        self.assertEqual(data["temperature_valid"], 1)
+
+    def test_heat_control_telemetry_layout(self):
+        payload = struct.pack("<IffiiBBBHBB", 123, 350.0, 348.5, 1000, 900,
+                              2, 1, 5, 0, 1, 1)
+        payload += struct.pack("<BBBBBHH", 2, 1, 1, 0, 1, 88, 4117)
+        payload += struct.pack("<ffB", 42.5, 41.875, 1)
+        payload += struct.pack("<ff", 63.25, 18.75)
+        data = decode_telemetry(payload)
+        self.assertAlmostEqual(data["heat_power_percent"], 63.25)
+        self.assertAlmostEqual(data["heat_integral_output"], 18.75)
 
     def test_screen_work_frame_is_separate(self):
         frame = build_screen_work_frame(0x1037, 350.0)

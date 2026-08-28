@@ -69,6 +69,8 @@ typedef struct {
     AppStopReason stop_reason;
     AppFault fault;
     AppTreatmentSettings settings;
+    float measured_temperature_c;
+    bool temperature_valid;
     bool charging;
     bool charge_full;
     bool low_battery_warning;

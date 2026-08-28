@@ -7,6 +7,7 @@
 #include "app_log.h"
 #include "i2c.h"
 #include "main.h"
+#include "product_config.h"
 #include "task.h"
 
 #define TMP112_ADDRESS      (0x48U << 1U)
@@ -145,16 +146,25 @@ static bool eye_read_u16(uint8_t address, uint16_t *value)
 
 static bool eye_read_raw_state(AppEyeState *state)
 {
+#if PRODUCT_EYE_FUSE_ENABLED
     uint16_t marker;
+#endif
     uint16_t service;
 
     if (state == NULL || i2c2_device_ready(TMP112_ADDRESS) != HAL_OK ||
-        !eye_read_u16(EYE_SERVICE_ADDRESS, &service) ||
-        !eye_read_u16(EYE_MARK_ADDRESS, &marker)) {
+        !eye_read_u16(EYE_SERVICE_ADDRESS, &service)
+#if PRODUCT_EYE_FUSE_ENABLED
+        || !eye_read_u16(EYE_MARK_ADDRESS, &marker)
+#endif
+        ) {
         return false;
     }
+#if PRODUCT_EYE_FUSE_ENABLED
     *state = service == EYE_SERVICE_MARK ? APP_EYE_SERVICE :
              marker == 0xFFFFU ? APP_EYE_NEW : APP_EYE_CONSUMED;
+#else
+    *state = service == EYE_SERVICE_MARK ? APP_EYE_SERVICE : APP_EYE_NEW;
+#endif
     return true;
 }
 
@@ -167,20 +177,34 @@ void EyeDriver_Init(void)
     eye_restart_debounce();
 }
 
-bool EyeDriver_ReadTemperature(float *temperature_c)
+static bool eye_read_temperature(float *temperature_c, bool restart_debounce)
 {
     uint8_t data[2];
     int16_t raw;
 
     if (temperature_c == NULL ||
         i2c2_mem_read(TMP112_ADDRESS, 0x00U, data, sizeof(data), 50U) != HAL_OK) {
-        eye_restart_debounce();
+        if (restart_debounce) {
+            eye_restart_debounce();
+        }
         return false;
     }
     raw = (int16_t)(((uint16_t)data[0] << 8U) | data[1]);
     raw >>= 4;
     *temperature_c = (float)raw * 0.0625f;
     return true;
+}
+
+bool EyeDriver_ReadTemperature(float *temperature_c)
+{
+    return eye_read_temperature(temperature_c, true);
+}
+
+bool EyeDriver_ReadTemperatureTelemetry(float *temperature_c)
+{
+    /* Telemetry is observational: a failed optional sample must not disturb
+     * the eye insertion/removal debounce state. */
+    return eye_read_temperature(temperature_c, false);
 }
 
 AppEyeState EyeDriver_ReadState(void)
@@ -241,6 +265,7 @@ bool EyeDriver_InitialStateConfirmed(void)
 
 bool EyeDriver_MarkConsumed(void)
 {
+#if PRODUCT_EYE_FUSE_ENABLED
     uint8_t bytes[2] = {0U, 1U};
     uint16_t verify = 0xFFFFU;
 
@@ -259,6 +284,7 @@ bool EyeDriver_MarkConsumed(void)
     g_stable_state = APP_EYE_CONSUMED;
     g_candidate_state = APP_EYE_CONSUMED;
     g_candidate_samples = 0U;
+#endif
     return true;
 }
 

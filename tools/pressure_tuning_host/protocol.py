@@ -28,11 +28,16 @@ CMD_START = 0x22
 CMD_STOP = 0x23
 CMD_TELEMETRY_CONTROL = 0x24
 CMD_GET_STATUS = 0x25
+CMD_GET_HEAT_PID = 0x26
+CMD_SET_HEAT_PID = 0x27
+CMD_SET_TEMPERATURE = 0x28
+CMD_PREPARE_HEAT = 0x29
 CMD_DEBUG_CONTROL = 0x30
 
 RSP_INFO = 0x81
 RSP_PROFILE = 0x90
 RSP_ACK = 0x91
+RSP_HEAT_PID = 0x92
 RSP_TELEMETRY = 0xA0
 RSP_HOME_EVENT = 0xA1
 
@@ -157,8 +162,18 @@ def decode_profile(payload: bytes) -> Tuple[int, dict]:
     return unpacked[0], dict(zip(PROFILE_KEYS, unpacked[1:]))
 
 
+def encode_heat_pid(kp: float, ki: float, kd: float) -> bytes:
+    return struct.pack("<fff", float(kp), float(ki), float(kd))
+
+
+def decode_heat_pid(payload: bytes) -> dict:
+    if len(payload) != 12:
+        raise ValueError("invalid heat PID payload")
+    return dict(zip(("kp", "ki", "kd"), struct.unpack("<fff", payload)))
+
+
 def decode_telemetry(payload: bytes) -> dict:
-    if len(payload) not in (27, 36):
+    if len(payload) not in (27, 36, 45, 53):
         raise ValueError("invalid telemetry payload")
     values = struct.unpack("<IffiiBBBHBB", payload[:27])
     keys = (
@@ -166,13 +181,26 @@ def decode_telemetry(payload: bytes) -> dict:
         "stage", "active", "app_state", "fault", "charging", "zero_valid",
     )
     result = dict(zip(keys, values))
-    if len(payload) == 36:
-        extra = struct.unpack("<BBBBBHH", payload[27:])
+    if len(payload) >= 36:
+        extra = struct.unpack("<BBBBBHH", payload[27:36])
         extra_keys = (
             "eye", "home_valid", "stop_reason", "charge_full", "debug_mode",
             "battery_soc", "battery_mv",
         )
         result.update(zip(extra_keys, extra))
+    if len(payload) >= 45:
+        target_c, measured_c, valid = struct.unpack("<ffB", payload[36:45])
+        result.update(
+            target_temperature_c=target_c,
+            temperature_c=measured_c,
+            temperature_valid=valid,
+        )
+    if len(payload) == 53:
+        power_percent, integral_output = struct.unpack("<ff", payload[45:53])
+        result.update(
+            heat_power_percent=power_percent,
+            heat_integral_output=integral_output,
+        )
     return result
 
 

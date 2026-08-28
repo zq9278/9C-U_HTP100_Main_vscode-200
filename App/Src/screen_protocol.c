@@ -5,6 +5,7 @@
 #include "app_config.h"
 #include "app_controller.h"
 #include "app_log.h"
+#include "product_config.h"
 
 #define WORK_HEADER_0      0x5AU
 #define WORK_HEADER_1      0xA5U
@@ -117,7 +118,7 @@ static void handle_work_frame(const uint8_t *frame)
     case 0x1050U:
         ScreenProtocol_SendU16(0x00ADU, 1U);
         AppController_ScreenBoot();
-        ScreenProtocol_SendU32(0x2060U, APP_SOFTWARE_VERSION);
+        ScreenProtocol_SendU32(0x2060U, PRODUCT_VERSION_NUMBER);
         ScreenProtocol_SendU16(0x00ABU, AppController_StorageRead(0x06U, 0U));
         send_preset(AppController_StorageRead(0xFCU, 0U), false);
         break;

@@ -7,8 +7,10 @@
 #include "app_config.h"
 #include "app_controller.h"
 #include "app_log.h"
+#include "eye_driver.h"
 #include "main.h"
 #include "pressure_tuning.h"
+#include "product_config.h"
 #include "treatment_hw.h"
 
 #define TUNING_HEADER_0         0x7AU
@@ -33,11 +35,16 @@
 #define CMD_STOP                0x23U
 #define CMD_TELEMETRY_CONTROL   0x24U
 #define CMD_GET_STATUS          0x25U
+#define CMD_GET_HEAT_PID        0x26U
+#define CMD_SET_HEAT_PID        0x27U
+#define CMD_SET_TEMPERATURE     0x28U
+#define CMD_PREPARE_HEAT        0x29U
 #define CMD_DEBUG_CONTROL       0x30U
 
 #define RSP_INFO                0x81U
 #define RSP_PROFILE             0x90U
 #define RSP_ACK                 0x91U
+#define RSP_HEAT_PID            0x92U
 #define RSP_TELEMETRY           0xA0U
 #define RSP_HOME_EVENT          0xA1U
 
@@ -201,14 +208,32 @@ static void send_profile(uint8_t sequence, uint8_t index)
     (void)send_frame(RSP_PROFILE, sequence, payload, sizeof(payload));
 }
 
+static void send_heat_pid(uint8_t sequence)
+{
+    uint8_t payload[12];
+    float kp;
+    float ki;
+    float kd;
+
+    TreatmentHw_GetHeatPid(&kp, &ki, &kd);
+    write_float(&payload[0], kp);
+    write_float(&payload[4], ki);
+    write_float(&payload[8], kd);
+    (void)send_frame(RSP_HEAT_PID, sequence, payload, sizeof(payload));
+}
+
 static void send_telemetry(uint8_t sequence)
 {
     const AppSnapshot *status = AppController_Status();
-    uint8_t payload[36];
+    uint8_t payload[53];
     int32_t raw = 0;
     float pressure = 0.0f;
+    float temperature = status->measured_temperature_c;
+    float heat_power_percent = 0.0f;
+    float heat_integral_output = 0.0f;
     uint8_t stage = 0xFFU;
     bool active = false;
+    bool temperature_valid = status->temperature_valid;
 
     if (!TreatmentHw_PressureTelemetry(&raw, &pressure, &stage, &active) || !active) {
         if (Ads1220Driver_Ready() && Ads1220Driver_ZeroValid() &&
@@ -217,6 +242,10 @@ static void send_telemetry(uint8_t sequence)
                                                       status->settings.pressure_mmhg);
         }
     }
+    if (!temperature_valid && status->eye != APP_EYE_ABSENT) {
+        temperature_valid = EyeDriver_ReadTemperatureTelemetry(&temperature);
+    }
+    TreatmentHw_HeatTelemetry(&heat_power_percent, &heat_integral_output);
     write_u32(&payload[0], HAL_GetTick());
     write_float(&payload[4], status->settings.pressure_mmhg);
     write_float(&payload[8], pressure);
@@ -235,10 +264,16 @@ static void send_telemetry(uint8_t sequence)
     payload[31] = AppController_DebugMode() ? 1U : 0U;
     write_u16(&payload[32], status->battery_soc);
     write_u16(&payload[34], status->battery_mv);
+    write_float(&payload[36], status->state == APP_STATE_PREHEAT ?
+                              APP_PREHEAT_TARGET_C : status->settings.temperature_c);
+    write_float(&payload[40], temperature_valid ? temperature : 0.0f);
+    payload[44] = temperature_valid ? 1U : 0U;
+    write_float(&payload[45], heat_power_percent);
+    write_float(&payload[49], heat_integral_output);
     (void)send_frame(RSP_TELEMETRY, sequence, payload, sizeof(payload));
 }
 
-static uint8_t prepare_rejection_status(void)
+static uint8_t prepare_rejection_status(bool pressure_required)
 {
     const AppSnapshot *status = AppController_Status();
     bool quick_candidate = status->state == APP_STATE_HOMING &&
@@ -251,7 +286,9 @@ static uint8_t prepare_rejection_status(void)
     if (!status->home_valid && !quick_candidate) return STATUS_HOME_INVALID;
     if (status->eye != APP_EYE_NEW && status->eye != APP_EYE_IN_USE &&
         status->eye != APP_EYE_SERVICE) return STATUS_EYE_INVALID;
-    if (!status->pressure_zero_valid && !quick_candidate) return STATUS_ZERO_INVALID;
+    if (pressure_required && !status->pressure_zero_valid && !quick_candidate) {
+        return STATUS_ZERO_INVALID;
+    }
     return STATUS_OK;
 }
 
@@ -315,7 +352,7 @@ static void handle_frame(uint8_t command, uint8_t sequence,
     switch (command) {
     case CMD_HELLO: {
         uint8_t info[6];
-        write_u32(&info[0], APP_SOFTWARE_VERSION);
+        write_u32(&info[0], PRODUCT_VERSION_NUMBER);
         info[4] = TUNING_PROTOCOL_VERSION;
         info[5] = PRESSURE_TUNING_PROFILE_COUNT;
         (void)send_frame(RSP_INFO, sequence, info, sizeof(info));
@@ -329,6 +366,7 @@ static void handle_frame(uint8_t command, uint8_t sequence,
         for (uint8_t index = 0U; index < PRESSURE_TUNING_PROFILE_COUNT; ++index) {
             send_profile(sequence, index);
         }
+        send_heat_pid(sequence);
         break;
     case CMD_GET_PROFILE:
         if (payload_length != 1U) {
@@ -410,7 +448,7 @@ static void handle_frame(uint8_t command, uint8_t sequence,
                 target > APP_MAX_SAFE_PRESSURE_MMHG) {
                 send_ack(sequence, command, STATUS_OUT_OF_RANGE);
             } else {
-                uint8_t status = prepare_rejection_status();
+                uint8_t status = prepare_rejection_status(true);
                 if (status == STATUS_OK &&
                     !AppController_Prepare(APP_MODE_PRESSURE, target)) {
                     status = STATUS_REJECTED;
@@ -455,6 +493,50 @@ static void handle_frame(uint8_t command, uint8_t sequence,
             send_ack(sequence, command, STATUS_BAD_PAYLOAD);
         } else {
             send_telemetry(sequence);
+        }
+        break;
+    case CMD_GET_HEAT_PID:
+        if (payload_length != 0U) {
+            send_ack(sequence, command, STATUS_BAD_PAYLOAD);
+        } else {
+            send_heat_pid(sequence);
+        }
+        break;
+    case CMD_SET_HEAT_PID:
+        if (payload_length != 12U) {
+            send_ack(sequence, command, STATUS_BAD_PAYLOAD);
+        } else if (!TreatmentHw_SetHeatPid(read_float(&payload[0]),
+                                           read_float(&payload[4]),
+                                           read_float(&payload[8]))) {
+            send_ack(sequence, command, STATUS_OUT_OF_RANGE);
+        } else {
+            send_ack(sequence, command, STATUS_OK);
+        }
+        break;
+    case CMD_SET_TEMPERATURE:
+        if (payload_length != 4U) {
+            send_ack(sequence, command, STATUS_BAD_PAYLOAD);
+        } else {
+            float target = read_float(payload);
+            if (!isfinite(target) || target < 20.0f ||
+                target >= APP_MAX_SAFE_TEMPERATURE_C) {
+                send_ack(sequence, command, STATUS_OUT_OF_RANGE);
+            } else {
+                AppController_SetTemperature(target);
+                send_ack(sequence, command, STATUS_OK);
+            }
+        }
+        break;
+    case CMD_PREPARE_HEAT:
+        if (payload_length != 0U) {
+            send_ack(sequence, command, STATUS_BAD_PAYLOAD);
+        } else {
+            uint8_t status = prepare_rejection_status(false);
+            if (status == STATUS_OK &&
+                !AppController_Prepare(APP_MODE_HEAT, 0.0f)) {
+                status = STATUS_REJECTED;
+            }
+            send_ack(sequence, command, status);
         }
         break;
     case CMD_DEBUG_CONTROL:

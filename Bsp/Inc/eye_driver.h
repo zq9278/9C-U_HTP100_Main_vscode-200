@@ -7,6 +7,7 @@
 
 void EyeDriver_Init(void);
 bool EyeDriver_ReadTemperature(float *temperature_c);
+bool EyeDriver_ReadTemperatureTelemetry(float *temperature_c);
 AppEyeState EyeDriver_ReadState(void);
 bool EyeDriver_InitialStateConfirmed(void);
 bool EyeDriver_MarkConsumed(void);

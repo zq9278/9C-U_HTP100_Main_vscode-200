@@ -8,6 +8,9 @@
 void TreatmentHw_Init(void);
 void TreatmentHw_SafeOutputsOff(void);
 bool TreatmentHw_HeaterControl(float target_c, float *measured_c);
+bool TreatmentHw_SetHeatPid(float kp, float ki, float kd);
+void TreatmentHw_GetHeatPid(float *kp, float *ki, float *kd);
+void TreatmentHw_HeatTelemetry(float *power_percent, float *integral_output);
 bool TreatmentHw_PressureStart(float target_mmhg);
 bool TreatmentHw_PressureStep(float target_mmhg, float *measured_mmhg);
 void TreatmentHw_PressureStop(void);

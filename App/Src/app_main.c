@@ -7,6 +7,7 @@
 #include "board_port.h"
 #include "eye_driver.h"
 #include "main.h"
+#include "product_config.h"
 #include "screen_protocol.h"
 #include "task.h"
 #include "tuning_protocol.h"
@@ -30,7 +31,9 @@ void AppMain_Task(void *argument)
 
     (void)argument;
     AppLog_Init();
-    LOGI("Firmware boot, version=%lu", (unsigned long)APP_SOFTWARE_VERSION);
+    LOGI("%s firmware boot, version=%lu, eye_fuse=%u",
+         PRODUCT_MODEL_NAME, (unsigned long)PRODUCT_VERSION_NUMBER,
+         (unsigned)PRODUCT_EYE_FUSE_ENABLED);
     if (!Board_Init()) {
         LOGE("Board initialization failed");
         for (;;) {

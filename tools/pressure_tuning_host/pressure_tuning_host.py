@@ -29,11 +29,12 @@ from PyQt5.QtWidgets import (
 
 from protocol import (
     CMD_DEBUG_CONTROL, CMD_DEFAULTS, CMD_GET_ALL, CMD_GET_STATUS,
-    CMD_HELLO, CMD_PREPARE, CMD_SAVE, CMD_SET_FIELD,
-    CMD_START, CMD_STOP, CMD_TELEMETRY_CONTROL,
-    PROFILE_KEYS, RSP_ACK, RSP_HOME_EVENT, RSP_INFO, RSP_PROFILE, RSP_TELEMETRY, STATUS_TEXT,
-    FrameParser, build_frame, build_screen_work_frame, decode_home_event,
-    decode_profile, decode_telemetry, encode_profile_field,
+    CMD_GET_HEAT_PID, CMD_HELLO, CMD_PREPARE, CMD_PREPARE_HEAT, CMD_SAVE,
+    CMD_SET_FIELD, CMD_SET_HEAT_PID, CMD_SET_TEMPERATURE, CMD_START, CMD_STOP,
+    CMD_TELEMETRY_CONTROL, PROFILE_KEYS, RSP_ACK, RSP_HEAT_PID, RSP_HOME_EVENT,
+    RSP_INFO, RSP_PROFILE, RSP_TELEMETRY, STATUS_TEXT, FrameParser, build_frame,
+    build_screen_work_frame, decode_heat_pid, decode_home_event, decode_profile,
+    decode_telemetry, encode_heat_pid, encode_profile_field,
 )
 
 
@@ -124,12 +125,107 @@ class PressurePlot(QWidget):
         painter.drawText(left + 48, self.height() - 8, "目标")
 
 
+class TemperaturePlot(QWidget):
+    def __init__(self) -> None:
+        super().__init__()
+        self.samples = deque(maxlen=600)
+        self.setMinimumHeight(220)
+
+    def add_sample(self, temperature: float, target: float,
+                   power_percent: float | None = None,
+                   integral_output_percent: float | None = None) -> None:
+        if math.isfinite(temperature) and math.isfinite(target):
+            power = (power_percent if power_percent is not None and
+                     math.isfinite(power_percent) else None)
+            integral_output = (
+                integral_output_percent
+                if integral_output_percent is not None and
+                math.isfinite(integral_output_percent) else None)
+            self.samples.append((temperature, target, power, integral_output))
+            self.update()
+
+    def clear(self) -> None:
+        self.samples.clear()
+        self.update()
+
+    def paintEvent(self, _event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.fillRect(self.rect(), QColor("#10151d"))
+        left, top, right, bottom = 48, 14, 48, 28
+        width = max(1, self.width() - left - right)
+        height = max(1, self.height() - top - bottom)
+        values = list(self.samples)
+        if values:
+            all_values = [value for row in values for value in row[:2]]
+            min_y = math.floor((min(all_values) - 2.0) / 5.0) * 5.0
+            max_y = math.ceil((max(all_values) + 2.0) / 5.0) * 5.0
+            if max_y - min_y < 10.0:
+                max_y = min_y + 10.0
+        else:
+            min_y, max_y = 20.0, 50.0
+        painter.setFont(QFont("Microsoft YaHei", 8))
+        integral_outputs = [abs(row[3]) for row in values if row[3] is not None]
+        auxiliary_limit = max(100.0, math.ceil(max(integral_outputs, default=0.0) / 50.0) * 50.0)
+        for i in range(6):
+            y = top + height * i / 5
+            value = max_y - (max_y - min_y) * i / 5
+            auxiliary_value = auxiliary_limit - 2.0 * auxiliary_limit * i / 5
+            painter.setPen(QPen(QColor("#263241"), 1))
+            painter.drawLine(left, int(y), left + width, int(y))
+            painter.setPen(QColor("#8694a6"))
+            painter.drawText(3, int(y + 4), f"{value:.1f}")
+            painter.drawText(self.width() - 45, int(y + 4), f"{auxiliary_value:.0f}")
+        if len(values) < 2:
+            painter.setPen(QColor("#758397"))
+            painter.drawText(self.rect(), Qt.AlignCenter, "等待温度遥测数据")
+            return
+
+        def points(field: int):
+            count = len(values)
+            span = max_y - min_y
+            return [QPointF(
+                left + width * i / max(1, count - 1),
+                top + height * (1.0 - max(0.0, min(1.0, (row[field] - min_y) / span))))
+                for i, row in enumerate(values)]
+
+        def auxiliary_points(field: int):
+            count = len(values)
+            return [QPointF(
+                left + width * i / max(1, count - 1),
+                top + height * (1.0 - (
+                    max(-auxiliary_limit, min(auxiliary_limit, row[field])) +
+                    auxiliary_limit) / (2.0 * auxiliary_limit)))
+                for i, row in enumerate(values) if row[field] is not None]
+
+        painter.setPen(QPen(QColor("#f5c542"), 1.5))
+        painter.drawPolyline(*points(1))
+        painter.setPen(QPen(QColor("#ff5c7a"), 2.0))
+        painter.drawPolyline(*points(0))
+        power_points = auxiliary_points(2)
+        if len(power_points) >= 2:
+            painter.setPen(QPen(QColor("#18b9ff"), 1.8))
+            painter.drawPolyline(*power_points)
+        integral_points = auxiliary_points(3)
+        if len(integral_points) >= 2:
+            painter.setPen(QPen(QColor("#a77bff"), 1.8))
+            painter.drawPolyline(*integral_points)
+        painter.setPen(QColor("#ff5c7a"))
+        painter.drawText(left, self.height() - 8, "温度")
+        painter.setPen(QColor("#f5c542"))
+        painter.drawText(left + 48, self.height() - 8, "目标")
+        painter.setPen(QColor("#18b9ff"))
+        painter.drawText(left + 96, self.height() - 8, "功率%")
+        painter.setPen(QColor("#a77bff"))
+        painter.drawText(left + 156, self.height() - 8, "积分输出%")
+
+
 class MainWindow(QMainWindow):
     ding_result = pyqtSignal(bool, str)
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("HTP100 压力标定与 PID 调参工具")
+        self.setWindowTitle("HTP100 压力标定、温控/压力 PID 调参工具")
         self.resize(1550, 980)
         self.serial = None
         self.parser = FrameParser()
@@ -206,13 +302,15 @@ class MainWindow(QMainWindow):
         layout.addLayout(connection)
 
         table_group = QGroupBox("五挡压力参数（修改即时写 RAM；保存会先同步整表再写外置 EEPROM）")
+        self.table_group = table_group
+        table_group.setFixedHeight(280)
         table_layout = QVBoxLayout(table_group)
         self.table = QTableWidget(5, len(COLUMNS) + 1)
         self.table.setHorizontalHeaderLabels(["目标压力档"] + [c[0] for c in COLUMNS])
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setAlternatingRowColors(True)
-        self.table.setMinimumHeight(280)
+        self.table.setFixedHeight(200)
         self.table.setColumnWidth(0, 90)
         for row, label in enumerate(RANGES):
             item = QTableWidgetItem(label + " mmHg")
@@ -302,6 +400,47 @@ class MainWindow(QMainWindow):
         self._refresh_stats_label()
         layout.addWidget(aging_group)
 
+        heat_pid_group = QGroupBox("温控 PID 调试（参数写入 RAM，重启恢复默认值）")
+        heat_pid = QGridLayout(heat_pid_group)
+        self.heat_target = QDoubleSpinBox()
+        self.heat_target.setRange(20.0, 43.5)
+        self.heat_target.setDecimals(1)
+        self.heat_target.setValue(42.5)
+        self.heat_target.setSuffix(" °C")
+        self.heat_target.setKeyboardTracking(False)
+        heat_pid.addWidget(QLabel("目标温度"), 0, 0)
+        heat_pid.addWidget(self.heat_target, 0, 1)
+        self.heat_pid_widgets = {}
+        for column, (key, title, maximum, value) in enumerate((
+            ("kp", "Kp", 100.0, 30.0),
+            ("ki", "Ki", 50.0, 5.0),
+            ("kd", "Kd", 20.0, 5.0),
+        ), 1):
+            spin = QDoubleSpinBox()
+            spin.setRange(0.0, maximum)
+            spin.setDecimals(3)
+            spin.setValue(value)
+            spin.setKeyboardTracking(False)
+            self.heat_pid_widgets[key] = spin
+            heat_pid.addWidget(QLabel(title), 0, column * 2)
+            heat_pid.addWidget(spin, 0, column * 2 + 1)
+        apply_pid_button = QPushButton("应用温控 PID")
+        apply_pid_button.clicked.connect(self._write_heat_pid)
+        heat_pid.addWidget(apply_pid_button, 0, 8)
+        read_pid_button = QPushButton("读取温控 PID")
+        read_pid_button.clicked.connect(self._read_heat_pid)
+        heat_pid.addWidget(read_pid_button, 0, 9)
+        start_heat_button = QPushButton("准备并开始温控")
+        start_heat_button.setToolTip(
+            "依次写入目标与 PID、准备加热并开始治疗；需要有效眼盾，并遵循眼盾消耗规则。")
+        start_heat_button.clicked.connect(self._start_heat_tuning)
+        heat_pid.addWidget(start_heat_button, 0, 10)
+        stop_heat_button = QPushButton("停止并回零")
+        stop_heat_button.setStyleSheet("background:#9b2f35;color:white")
+        stop_heat_button.clicked.connect(self._stop)
+        heat_pid.addWidget(stop_heat_button, 0, 11)
+        layout.addWidget(heat_pid_group)
+
         lower = QHBoxLayout()
         control_group = QGroupBox("压力运行测试")
         controls = QGridLayout(control_group)
@@ -339,18 +478,29 @@ class MainWindow(QMainWindow):
         clear_button.clicked.connect(self.plot_clear)
         controls.addWidget(clear_button, 2, 2)
         self.live_labels = {}
-        fields = [("pressure", "压力"), ("raw", "ADC原始值"), ("zero", "零点原始值"),
+        fields = [("pressure", "压力"), ("temperature", "温度"),
+                  ("heat_power", "加热功率"), ("heat_integral_output", "温控积分输出"),
+                  ("raw", "ADC原始值"), ("zero", "零点原始值"),
                   ("stage", "压力阶段"), ("state", "设备状态"), ("eye", "眼盾/回零"),
                   ("power", "供电/调试"), ("fault", "故障码")]
-        for row, (key, title) in enumerate(fields, 3):
-            controls.addWidget(QLabel(title), row, 0)
+        live_widget = QWidget()
+        live_grid = QGridLayout(live_widget)
+        live_grid.setContentsMargins(0, 0, 0, 0)
+        live_grid.setVerticalSpacing(3)
+        for index, (key, title) in enumerate(fields):
+            row = index // 2
+            column = (index % 2) * 2
+            live_grid.addWidget(QLabel(title), row, column)
             label = QLabel("—")
-            label.setStyleSheet("font-size:16px;font-weight:600")
-            controls.addWidget(label, row, 1, 1, 2)
+            label.setStyleSheet("font-size:14px;font-weight:600")
+            live_grid.addWidget(label, row, column + 1)
             self.live_labels[key] = label
+        controls.addWidget(live_widget, 3, 0, 1, 3)
         self.plot = PressurePlot()
+        self.temperature_plot = TemperaturePlot()
         lower.addWidget(control_group, 1)
         lower.addWidget(self.plot, 2)
+        lower.addWidget(self.temperature_plot, 2)
         layout.addLayout(lower)
 
         self.log = QTextEdit()
@@ -378,10 +528,13 @@ class MainWindow(QMainWindow):
         scale = scale_percent / 100.0
         QApplication.instance().setFont(QFont("Microsoft YaHei", font_size))
         if hasattr(self, "table"):
-            self.table.verticalHeader().setDefaultSectionSize(max(24, int(32 * scale)))
-            self.table.setMinimumHeight(int(280 * scale))
+            self.table.verticalHeader().setDefaultSectionSize(max(22, int(26 * scale)))
+            self.table.setFixedHeight(max(175, int(200 * scale)))
+            self.table_group.setFixedHeight(max(250, int(280 * scale)))
         if hasattr(self, "plot"):
             self.plot.setMinimumHeight(int(220 * scale))
+        if hasattr(self, "temperature_plot"):
+            self.temperature_plot.setMinimumHeight(int(220 * scale))
         if hasattr(self, "log"):
             self.log.setMaximumHeight(int(165 * scale))
         self.settings.setValue("font_size", font_size)
@@ -863,7 +1016,7 @@ class MainWindow(QMainWindow):
 
     def _command_observed_in_telemetry(self, command: int) -> bool:
         state = self.last_telemetry.get("app_state")
-        if command == CMD_PREPARE:
+        if command in (CMD_PREPARE, CMD_PREPARE_HEAT):
             return state in (3, 4)
         if command == CMD_START:
             return state == 5
@@ -917,6 +1070,16 @@ class MainWindow(QMainWindow):
                 index, values = decode_profile(frame.payload)
                 self._set_profile(index, values)
                 self._log(f"收到第 {index + 1} 挡参数")
+            except ValueError as error:
+                self._log(str(error), "ERROR")
+        elif frame.command == RSP_HEAT_PID:
+            try:
+                values = decode_heat_pid(frame.payload)
+                for key, value in values.items():
+                    self.heat_pid_widgets[key].setValue(value)
+                self._log(
+                    f"收到温控 PID：Kp={values['kp']:.3f}，"
+                    f"Ki={values['ki']:.3f}，Kd={values['kd']:.3f}")
             except ValueError as error:
                 self._log(str(error), "ERROR")
         elif frame.command == RSP_ACK and len(frame.payload) == 2:
@@ -974,6 +1137,26 @@ class MainWindow(QMainWindow):
         pressure = data["pressure_mmhg"]
         target = data["target_mmhg"]
         self.live_labels["pressure"].setText(f"{pressure:.1f} / {target:.1f} mmHg")
+        target_temperature = data.get("target_temperature_c")
+        measured_temperature = data.get("temperature_c")
+        if data.get("temperature_valid") and measured_temperature is not None:
+            self.live_labels["temperature"].setText(
+                f"{measured_temperature:.2f} / {target_temperature:.1f} °C")
+        elif target_temperature is not None:
+            self.live_labels["temperature"].setText(
+                f"— / {target_temperature:.1f} °C（传感器暂不可用）")
+        else:
+            self.live_labels["temperature"].setText("旧固件未提供")
+        heat_power = data.get("heat_power_percent")
+        heat_integral_output = data.get("heat_integral_output")
+        heat_integral_output_percent = (
+            heat_integral_output * (100.0 / 254.0)
+            if heat_integral_output is not None else None)
+        self.live_labels["heat_power"].setText(
+            f"{heat_power:.1f} %" if heat_power is not None else "旧固件未提供")
+        self.live_labels["heat_integral_output"].setText(
+            f"{heat_integral_output:.2f} PWM ({heat_integral_output_percent:.1f} %)"
+            if heat_integral_output is not None else "旧固件未提供")
         self.live_labels["raw"].setText(str(data["raw"]))
         self.live_labels["zero"].setText(f"{data['zero_raw']}（{'有效' if data['zero_valid'] else '无效'}）")
         self.live_labels["stage"].setText(STAGES.get(data["stage"], str(data["stage"])))
@@ -1000,11 +1183,44 @@ class MainWindow(QMainWindow):
             "font-size:16px;font-weight:600;color:#d23b43" if fault else
             "font-size:16px;font-weight:600;color:#168a49")
         self.plot.add_sample(pressure, target)
+        if (data.get("temperature_valid") and measured_temperature is not None and
+                target_temperature is not None):
+            self.temperature_plot.add_sample(
+                measured_temperature, target_temperature, heat_power,
+                heat_integral_output_percent)
         if self.aging_state == "running":
             self.aging_max_pressure = max(self.aging_max_pressure, pressure)
 
     def _read_all(self) -> None:
         self._send_direct(CMD_GET_ALL, b"", "读取全部参数")
+
+    def _read_heat_pid(self) -> None:
+        self._send_direct(CMD_GET_HEAT_PID, b"", "读取温控 PID")
+
+    def _heat_pid_payload(self) -> bytes:
+        return encode_heat_pid(
+            self.heat_pid_widgets["kp"].value(),
+            self.heat_pid_widgets["ki"].value(),
+            self.heat_pid_widgets["kd"].value())
+
+    def _write_heat_pid(self) -> None:
+        if not self.serial or not self.serial.is_open:
+            self._log("串口未连接，无法写入温控 PID", "ERROR")
+            return
+        self._queue_ack(CMD_SET_HEAT_PID, self._heat_pid_payload(),
+                        "应用温控 PID 到 RAM", self._read_heat_pid)
+
+    def _start_heat_tuning(self) -> None:
+        if not self.serial or not self.serial.is_open:
+            self._log("串口未连接，无法开始温控调试", "ERROR")
+            return
+        target = self.heat_target.value()
+        self._queue_ack(CMD_SET_TEMPERATURE, struct.pack("<f", target),
+                        f"设置温控目标 {target:.1f} °C")
+        self._queue_ack(CMD_SET_HEAT_PID, self._heat_pid_payload(),
+                        "应用温控 PID 到 RAM")
+        self._queue_ack(CMD_PREPARE_HEAT, b"", "准备加热模式")
+        self._queue_ack(CMD_START, b"", "开始温控调试")
 
     def _save_to_storage(self) -> None:
         if not self.serial or not self.serial.is_open:
@@ -1052,13 +1268,20 @@ class MainWindow(QMainWindow):
 
     def plot_clear(self) -> None:
         self.plot.clear()
+        self.temperature_plot.clear()
 
     def _export_json(self) -> None:
         path, _ = QFileDialog.getSaveFileName(self, "导出参数", "pressure_profiles.json", "JSON (*.json)")
         if not path:
             return
-        data = {"format": "HTP100-pressure-profile-v1",
-                "profiles": [self._get_profile(row) for row in range(5)]}
+        data = {
+            "format": "HTP100-pressure-profile-v1",
+            "profiles": [self._get_profile(row) for row in range(5)],
+            "heat_pid": {
+                key: widget.value() for key, widget in self.heat_pid_widgets.items()
+            },
+            "temperature_target_c": self.heat_target.value(),
+        }
         try:
             Path(path).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
             self._log(f"已导出 {path}")
@@ -1076,8 +1299,16 @@ class MainWindow(QMainWindow):
                 raise ValueError("配置必须恰好包含五挡参数")
             for row, values in enumerate(profiles):
                 self._set_profile(row, values)
+            heat_pid = data.get("heat_pid")
+            if isinstance(heat_pid, dict):
+                for key, widget in self.heat_pid_widgets.items():
+                    if key in heat_pid:
+                        widget.setValue(float(heat_pid[key]))
+            if "temperature_target_c" in data:
+                self.heat_target.setValue(float(data["temperature_target_c"]))
             self._log(
-                f"已导入 {path} 到表格；点击“同步整表并保存到外置 EEPROM”后写入设备")
+                f"已导入 {path} 到表格与温控 PID 控件；压力参数点击保存后写入设备，"
+                "温控 PID 点击应用后写入 RAM")
         except Exception as error:
             QMessageBox.critical(self, "导入失败", str(error))
 

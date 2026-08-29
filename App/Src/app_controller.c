@@ -192,9 +192,8 @@ static bool consume_eye_at_first_actuation(void)
 #endif
     /* Keep the current uninterrupted insertion session usable. */
     g_app.status.eye = APP_EYE_IN_USE;
-    if (g_app.port != NULL && g_app.port->screen_float != NULL) {
-        g_app.port->screen_float(SCREEN_NEW_EYE, 0.0f);
-    }
+    /* SCREEN_NEW_EYE is an insertion event. It was already sent when the
+     * eye shield changed to APP_EYE_NEW, so do not send it again at start. */
     return true;
 }
 

@@ -2,6 +2,7 @@
 #include <string.h>
 
 #include "app_controller.h"
+#include "product_config.h"
 
 void AppLog_Write(const char *level, const char *format, ...)
 {
@@ -20,6 +21,7 @@ static unsigned treatment_count;
 static unsigned power_off_count;
 static unsigned pressure_start_count;
 static unsigned eye_screen_count;
+static unsigned new_eye_screen_count;
 static float last_eye_screen_value;
 static AppLedState last_led;
 
@@ -49,6 +51,8 @@ static void screen_float(uint16_t command, float value)
     if (command == 0x2055U) {
         eye_screen_count++;
         last_eye_screen_value = value;
+    } else if (command == 0x2057U) {
+        new_eye_screen_count++;
     }
 }
 static void screen_u16(uint16_t command, uint16_t value) { (void)command; (void)value; }
@@ -70,6 +74,7 @@ static void reset_fixture(void)
     home_begin_count = home_poll_count = home_cancel_count = eye_consume_count = 0U;
     treatment_count = power_off_count = pressure_start_count = 0U;
     eye_screen_count = 0U;
+    new_eye_screen_count = 0U;
     last_eye_screen_value = -1.0f;
     last_led = APP_LED_IDLE;
     AppController_Init(&port);
@@ -82,10 +87,16 @@ static void reset_fixture(void)
 static void test_eye_is_consumed_only_at_formal_start(void)
 {
     reset_fixture();
+    assert(new_eye_screen_count == 1U);
     assert(AppController_Prepare(APP_MODE_HEAT, 0.0f));
     assert(eye_consume_count == 0U);
     assert(AppController_Start());
+    assert(new_eye_screen_count == 1U);
+#if PRODUCT_EYE_FUSE_ENABLED
     assert(eye_consume_count == 1U);
+#else
+    assert(eye_consume_count == 0U);
+#endif
     AppController_Stop(APP_STOP_NATURAL);
     assert(treatment_count == 1U);
     assert(AppController_Status()->eye == APP_EYE_IN_USE);
@@ -97,7 +108,11 @@ static void test_eye_is_consumed_only_at_formal_start(void)
     AppController_Tick();
     assert(AppController_Prepare(APP_MODE_HEAT, 0.0f));
     assert(AppController_Start());
+#if PRODUCT_EYE_FUSE_ENABLED
     assert(eye_consume_count == 1U);
+#else
+    assert(eye_consume_count == 0U);
+#endif
 }
 
 static void test_reinserted_consumed_eye_is_rejected(void)

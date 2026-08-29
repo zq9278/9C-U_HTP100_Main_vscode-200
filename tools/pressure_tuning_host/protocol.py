@@ -11,7 +11,7 @@ from typing import List, Tuple
 
 
 HEADER = b"\x7A\xA7"
-VERSION = 1
+VERSION = 8
 TAIL = b"\x0D\x0A"
 MAX_PAYLOAD = 64
 
@@ -61,9 +61,8 @@ PROFILE_KEYS = (
     "fast_speed",
     "approach_speed",
     "retract_speed",
-    "approach_threshold",
-    "hold_threshold",
-    "hold_ms",
+    "speed_switch_percent",
+    "hold_switch_percent",
     "retract_ms",
     "kp",
     "ki",
@@ -147,7 +146,7 @@ class FrameParser:
 
 def encode_profile(index: int, values: dict) -> bytes:
     numbers = [float(values[key]) for key in PROFILE_KEYS]
-    return struct.pack("<B11f", index, *numbers)
+    return struct.pack("<B10f", index, *numbers)
 
 
 def encode_profile_field(profile_index: int, field_key: str, value: float) -> bytes:
@@ -156,9 +155,9 @@ def encode_profile_field(profile_index: int, field_key: str, value: float) -> by
 
 
 def decode_profile(payload: bytes) -> Tuple[int, dict]:
-    if len(payload) != 45:
+    if len(payload) != 41:
         raise ValueError("invalid profile payload")
-    unpacked = struct.unpack("<B11f", payload)
+    unpacked = struct.unpack("<B10f", payload)
     return unpacked[0], dict(zip(PROFILE_KEYS, unpacked[1:]))
 
 
@@ -173,7 +172,7 @@ def decode_heat_pid(payload: bytes) -> dict:
 
 
 def decode_telemetry(payload: bytes) -> dict:
-    if len(payload) not in (27, 36, 45, 53):
+    if len(payload) not in (27, 36, 45, 53, 61):
         raise ValueError("invalid telemetry payload")
     values = struct.unpack("<IffiiBBBHBB", payload[:27])
     keys = (
@@ -195,11 +194,17 @@ def decode_telemetry(payload: bytes) -> dict:
             temperature_c=measured_c,
             temperature_valid=valid,
         )
-    if len(payload) == 53:
+    if len(payload) >= 53:
         power_percent, integral_output = struct.unpack("<ff", payload[45:53])
         result.update(
             heat_power_percent=power_percent,
             heat_integral_output=integral_output,
+        )
+    if len(payload) >= 61:
+        speed_command, pressure_error = struct.unpack("<if", payload[53:61])
+        result.update(
+            motor_speed_command=speed_command,
+            pressure_error=pressure_error,
         )
     return result
 

@@ -7,8 +7,15 @@
 
 #define TMC_SPI_TIMEOUT_MS 20U
 
+static uint32_t g_last_ramp_mode;
+static uint32_t g_last_vmax;
+static bool g_ramp_mode_valid;
+static bool g_vmax_valid;
+
 void Tmc5130Driver_Init(void)
 {
+    g_ramp_mode_valid = false;
+    g_vmax_valid = false;
     HAL_GPIO_WritePin(TMC_CSN_GPIO_Port, TMC_CSN_Pin, GPIO_PIN_SET);
     Tmc5130Driver_Enable(false);
 }
@@ -33,6 +40,15 @@ HAL_StatusTypeDef Tmc5130Driver_Write(uint8_t address, uint32_t value)
     HAL_GPIO_WritePin(TMC_CSN_GPIO_Port, TMC_CSN_Pin, GPIO_PIN_RESET);
     status = HAL_SPI_Transmit(&hspi1, frame, sizeof(frame), TMC_SPI_TIMEOUT_MS);
     HAL_GPIO_WritePin(TMC_CSN_GPIO_Port, TMC_CSN_Pin, GPIO_PIN_SET);
+    if (status == HAL_OK) {
+        if (address == 0x20U) {
+            g_last_ramp_mode = value;
+            g_ramp_mode_valid = true;
+        } else if (address == 0x27U) {
+            g_last_vmax = value;
+            g_vmax_valid = true;
+        }
+    }
     return status;
 }
 
@@ -95,12 +111,20 @@ bool Tmc5130Driver_SetSpeed(int32_t speed)
     uint32_t ramp_mode;
 
     if (speed == 0) {
+        if (g_vmax_valid && g_last_vmax == 0U) return true;
         return Tmc5130Driver_Write(0x27U, 0U) == HAL_OK;
     }
-    magnitude = speed < 0 ? (uint32_t)(-speed) : (uint32_t)speed;
+    magnitude = speed < 0 ? (uint32_t)(-(int64_t)speed) : (uint32_t)speed;
     ramp_mode = speed < 0 ? 1U : 2U;
-    return Tmc5130Driver_Write(0x20U, ramp_mode) == HAL_OK &&
-           Tmc5130Driver_Write(0x27U, magnitude) == HAL_OK;
+    if ((!g_ramp_mode_valid || g_last_ramp_mode != ramp_mode) &&
+        Tmc5130Driver_Write(0x20U, ramp_mode) != HAL_OK) {
+        return false;
+    }
+    if ((!g_vmax_valid || g_last_vmax != magnitude) &&
+        Tmc5130Driver_Write(0x27U, magnitude) != HAL_OK) {
+        return false;
+    }
+    return true;
 }
 
 void Tmc5130Driver_Stop(void)

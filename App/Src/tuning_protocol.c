@@ -15,7 +15,7 @@
 
 #define TUNING_HEADER_0         0x7AU
 #define TUNING_HEADER_1         0xA7U
-#define TUNING_PROTOCOL_VERSION 1U
+#define TUNING_PROTOCOL_VERSION 8U
 #define TUNING_TAIL_0           0x0DU
 #define TUNING_TAIL_1           0x0AU
 #define TUNING_FIXED_BYTES      10U
@@ -60,9 +60,9 @@
 #define STATUS_EYE_INVALID      9U
 #define STATUS_ZERO_INVALID     10U
 
-#define PROFILE_FLOAT_COUNT     11U
+#define PROFILE_FLOAT_COUNT     10U
 #define PROFILE_PAYLOAD_BYTES   (1U + PROFILE_FLOAT_COUNT * 4U)
-#define TELEMETRY_MIN_PERIOD_MS 100U
+#define TELEMETRY_MIN_PERIOD_MS 50U
 #define TELEMETRY_MAX_PERIOD_MS 2000U
 #define DEBUG_MODE_TIMEOUT_MS   15000U
 
@@ -163,22 +163,19 @@ static void profile_to_payload(uint8_t *payload, uint8_t index,
     write_float(&payload[9], profile->fast_speed);
     write_float(&payload[13], profile->approach_speed);
     write_float(&payload[17], profile->retract_speed);
-    write_float(&payload[21], profile->approach_threshold);
-    write_float(&payload[25], profile->hold_threshold);
-    write_float(&payload[29], (float)profile->hold_ms);
-    write_float(&payload[33], (float)profile->retract_ms);
-    write_float(&payload[37], profile->kp);
-    write_float(&payload[41], profile->ki);
+    write_float(&payload[21], profile->speed_switch_percent);
+    write_float(&payload[25], profile->hold_switch_percent);
+    write_float(&payload[29], (float)profile->retract_ms);
+    write_float(&payload[33], profile->kp);
+    write_float(&payload[37], profile->ki);
 }
 
 static bool payload_to_profile(PressureTuningProfile *profile, const uint8_t *payload)
 {
-    float hold_ms = read_float(&payload[29]);
-    float retract_ms = read_float(&payload[33]);
+    float retract_ms = read_float(&payload[29]);
 
-    if (!isfinite(hold_ms) || !isfinite(retract_ms) ||
-        hold_ms < 0.0f || hold_ms > 10000.0f ||
-        retract_ms < 0.0f || retract_ms > 10000.0f) {
+    if (!isfinite(retract_ms) || retract_ms < 0.0f ||
+        retract_ms > 10000.0f) {
         return false;
     }
     profile->sensitivity_mv_v = read_float(&payload[1]);
@@ -186,12 +183,11 @@ static bool payload_to_profile(PressureTuningProfile *profile, const uint8_t *pa
     profile->fast_speed = read_float(&payload[9]);
     profile->approach_speed = read_float(&payload[13]);
     profile->retract_speed = read_float(&payload[17]);
-    profile->approach_threshold = read_float(&payload[21]);
-    profile->hold_threshold = read_float(&payload[25]);
-    profile->hold_ms = (uint32_t)hold_ms;
-    profile->retract_ms = (uint32_t)retract_ms;
-    profile->kp = read_float(&payload[37]);
-    profile->ki = read_float(&payload[41]);
+    profile->speed_switch_percent = read_float(&payload[21]);
+    profile->hold_switch_percent = read_float(&payload[25]);
+    profile->retract_ms = (uint32_t)lroundf(retract_ms);
+    profile->kp = read_float(&payload[33]);
+    profile->ki = read_float(&payload[37]);
     return true;
 }
 
@@ -225,17 +221,21 @@ static void send_heat_pid(uint8_t sequence)
 static void send_telemetry(uint8_t sequence)
 {
     const AppSnapshot *status = AppController_Status();
-    uint8_t payload[53];
+    uint8_t payload[61];
     int32_t raw = 0;
     float pressure = 0.0f;
     float temperature = status->measured_temperature_c;
     float heat_power_percent = 0.0f;
     float heat_integral_output = 0.0f;
+    float pressure_error = 0.0f;
+    int32_t speed_command = 0;
     uint8_t stage = 0xFFU;
     bool active = false;
     bool temperature_valid = status->temperature_valid;
 
-    if (!TreatmentHw_PressureTelemetry(&raw, &pressure, &stage, &active) || !active) {
+    if (!TreatmentHw_PressureTelemetry(&raw, &pressure, &stage, &active,
+                                       &speed_command, &pressure_error) ||
+        !active) {
         if (Ads1220Driver_Ready() && Ads1220Driver_ZeroValid() &&
             Ads1220Driver_ReadRaw(&raw)) {
             pressure = Ads1220Driver_PressureFromRaw(raw,
@@ -270,6 +270,8 @@ static void send_telemetry(uint8_t sequence)
     payload[44] = temperature_valid ? 1U : 0U;
     write_float(&payload[45], heat_power_percent);
     write_float(&payload[49], heat_integral_output);
+    write_u32(&payload[53], (uint32_t)speed_command);
+    write_float(&payload[57], pressure_error);
     (void)send_frame(RSP_TELEMETRY, sequence, payload, sizeof(payload));
 }
 
@@ -326,18 +328,14 @@ static bool set_profile_field(uint8_t profile_index, uint8_t field_index,
     case 2U: profile.fast_speed = value; break;
     case 3U: profile.approach_speed = value; break;
     case 4U: profile.retract_speed = value; break;
-    case 5U: profile.approach_threshold = value; break;
-    case 6U: profile.hold_threshold = value; break;
+    case 5U: profile.speed_switch_percent = value; break;
+    case 6U: profile.hold_switch_percent = value; break;
     case 7U:
         if (value < 0.0f || value > 10000.0f) return false;
-        profile.hold_ms = (uint32_t)value;
+        profile.retract_ms = (uint32_t)lroundf(value);
         break;
-    case 8U:
-        if (value < 0.0f || value > 10000.0f) return false;
-        profile.retract_ms = (uint32_t)value;
-        break;
-    case 9U: profile.kp = value; break;
-    case 10U: profile.ki = value; break;
+    case 8U: profile.kp = value; break;
+    case 9U: profile.ki = value; break;
     default: return false;
     }
     return PressureTuning_Set(profile_index, &profile);

@@ -138,7 +138,7 @@ void Ws2812Driver_Tick(void)
 
     switch (g_requested) {
     case APP_LED_WORKING:  color = 0x222222U; break;
-    case APP_LED_WARNING:  color = g_blink && !g_phase ? 0U : 0x808000U; break;
+    case APP_LED_WARNING:  color = g_blink && !g_phase ? 0U : 0x222222U; break;
     case APP_LED_CHARGING: color = 0x020202U; break;
     case APP_LED_FULL:     color = 0x222222U; break;
     case APP_LED_FAULT:    color = 0x222222U; break;

@@ -13,10 +13,21 @@
 
 typedef enum {
     PRESS_STAGE_FAST = 0,
-    PRESS_STAGE_APPROACH,
+    PRESS_STAGE_SLOW,
     PRESS_STAGE_HOLD,
     PRESS_STAGE_RETRACT
 } PressureStage;
+
+#define PRESSURE_FILTER_ALPHA          0.35f
+#define PRESSURE_CONTROL_DEADBAND      3.0f
+#define PRESSURE_CONTROL_MAX_SPEED     8000.0f
+#define PRESSURE_CONTROL_MAX_I_OUTPUT  2000.0f
+#define PRESSURE_CONTROL_SLEW_PER_S    100000.0f
+#define PRESSURE_CONTROL_MIN_SPEED     300.0f
+#define PRESSURE_HOLD_TIME_MS          1000U
+#define PRESSURE_STEP_DEFAULT_DT_S     0.02f
+#define PRESSURE_STEP_MIN_DT_S         0.005f
+#define PRESSURE_STEP_MAX_DT_S         0.10f
 
 #define HEAT_PID_DEFAULT_KP 30.0f
 #define HEAT_PID_DEFAULT_KI 5.0f
@@ -39,11 +50,22 @@ static uint32_t g_home_spi_errors;
 static uint32_t g_ads_last_log_ms;
 static int32_t g_ads_last_raw;
 static int32_t g_ads_last_pressure_x10;
+static int32_t g_ads_last_unfiltered_pressure_x10;
 static bool g_ads_sample_valid;
 static bool g_ads_overpressure_pending;
 static PressureStage g_pressure_stage;
 static uint32_t g_pressure_stage_ms;
+static uint32_t g_pressure_last_step_ms;
+static uint32_t g_pressure_hold_started_ms;
 static float g_pressure_integral;
+static float g_pressure_command;
+static float g_pressure_error;
+static float g_pressure_filter_samples[3];
+static float g_pressure_filtered;
+static uint8_t g_pressure_filter_count;
+static uint8_t g_pressure_filter_index;
+static bool g_pressure_filter_valid;
+static bool g_pressure_hold_timer_started;
 static bool g_pressure_active;
 
 static float g_heat_integral;
@@ -54,6 +76,138 @@ static float g_heat_kd;
 static float g_heat_power_percent;
 static bool g_heat_previous_valid;
 static bool g_heat_pwm_started;
+
+static float clamp_float(float value, float minimum, float maximum)
+{
+    if (value < minimum) return minimum;
+    if (value > maximum) return maximum;
+    return value;
+}
+
+static float median3(float a, float b, float c)
+{
+    if (a > b) {
+        float temporary = a;
+        a = b;
+        b = temporary;
+    }
+    if (b > c) {
+        float temporary = b;
+        b = c;
+        c = temporary;
+    }
+    if (a > b) b = a;
+    return b;
+}
+
+static void pressure_filter_reset(void)
+{
+    g_pressure_filter_count = 0U;
+    g_pressure_filter_index = 0U;
+    g_pressure_filtered = 0.0f;
+    g_pressure_filter_valid = false;
+}
+
+static float pressure_filter_update(float sample)
+{
+    float selected;
+
+    g_pressure_filter_samples[g_pressure_filter_index] = sample;
+    g_pressure_filter_index = (uint8_t)((g_pressure_filter_index + 1U) % 3U);
+    if (g_pressure_filter_count < 3U) g_pressure_filter_count++;
+
+    if (g_pressure_filter_count == 1U) {
+        selected = sample;
+    } else if (g_pressure_filter_count == 2U) {
+        selected = (g_pressure_filter_samples[0] +
+                    g_pressure_filter_samples[1]) * 0.5f;
+    } else {
+        selected = median3(g_pressure_filter_samples[0],
+                           g_pressure_filter_samples[1],
+                           g_pressure_filter_samples[2]);
+    }
+
+    if (!g_pressure_filter_valid) {
+        g_pressure_filtered = selected;
+        g_pressure_filter_valid = true;
+    } else {
+        g_pressure_filtered += PRESSURE_FILTER_ALPHA *
+                               (selected - g_pressure_filtered);
+    }
+    return g_pressure_filtered;
+}
+
+static void pressure_control_reset(void)
+{
+    g_pressure_integral = 0.0f;
+    g_pressure_error = 0.0f;
+    g_pressure_hold_started_ms = 0U;
+    g_pressure_hold_timer_started = false;
+}
+
+static bool pressure_set_speed(float command)
+{
+    int32_t speed = (int32_t)command;
+
+    if (!Tmc5130Driver_SetSpeed(speed)) return false;
+    g_pressure_command = (float)speed;
+    return true;
+}
+
+static float pressure_control_command(const PressureTuningProfile *profile,
+                                      float error, float dt_s,
+                                      bool use_deadband)
+{
+    float effective_error = error;
+    float proportional;
+    float candidate_integral;
+    float candidate_i_output;
+    float candidate_command;
+    float desired;
+    float max_delta;
+    float speed_limit = clamp_float(profile->approach_speed,
+                                    PRESSURE_CONTROL_MIN_SPEED,
+                                    PRESSURE_CONTROL_MAX_SPEED);
+
+    if (use_deadband && fabsf(error) <= PRESSURE_CONTROL_DEADBAND) {
+        g_pressure_integral *= 0.95f;
+        desired = 0.0f;
+    } else {
+        proportional = profile->kp * effective_error;
+        if (profile->ki > 0.0f) {
+            candidate_integral = g_pressure_integral + effective_error * dt_s;
+            candidate_i_output = clamp_float(profile->ki * candidate_integral,
+                                              -PRESSURE_CONTROL_MAX_I_OUTPUT,
+                                              PRESSURE_CONTROL_MAX_I_OUTPUT);
+            candidate_integral = candidate_i_output / profile->ki;
+            candidate_command = proportional + candidate_i_output;
+
+            /* Conditional integration: do not accumulate farther into an
+             * already saturated output, but always allow unwinding. */
+            if ((candidate_command < speed_limit &&
+                 candidate_command > -speed_limit) ||
+                (candidate_command >= speed_limit &&
+                 effective_error < 0.0f) ||
+                (candidate_command <= -speed_limit &&
+                 effective_error > 0.0f)) {
+                g_pressure_integral = candidate_integral;
+            }
+        } else {
+            g_pressure_integral = 0.0f;
+        }
+        desired = proportional + profile->ki * g_pressure_integral;
+        desired = clamp_float(desired, -speed_limit, speed_limit);
+        if (desired > 0.0f && desired < PRESSURE_CONTROL_MIN_SPEED) {
+            desired = PRESSURE_CONTROL_MIN_SPEED;
+        } else if (desired < 0.0f && desired > -PRESSURE_CONTROL_MIN_SPEED) {
+            desired = -PRESSURE_CONTROL_MIN_SPEED;
+        }
+    }
+
+    max_delta = PRESSURE_CONTROL_SLEW_PER_S * dt_s;
+    return clamp_float(desired, g_pressure_command - max_delta,
+                       g_pressure_command + max_delta);
+}
 
 void TreatmentHw_Init(void)
 {
@@ -73,6 +227,10 @@ void TreatmentHw_SafeOutputsOff(void)
     g_heat_power_percent = 0.0f;
     g_heat_previous_valid = false;
     g_heat_pwm_started = false;
+    g_pressure_active = false;
+    g_pressure_command = 0.0f;
+    pressure_control_reset();
+    pressure_filter_reset();
     Tmc5130Driver_Stop();
 }
 
@@ -242,7 +400,6 @@ void TreatmentHw_HomeCancel(void)
 
 bool TreatmentHw_PressureStart(float target_mmhg)
 {
-    (void)target_mmhg;
     if (!Ads1220Driver_ZeroValid()) {
         return false;
     }
@@ -253,8 +410,13 @@ bool TreatmentHw_PressureStart(float target_mmhg)
     }
     g_pressure_stage = PRESS_STAGE_FAST;
     g_pressure_stage_ms = HAL_GetTick();
-    g_pressure_integral = 0.0f;
+    g_pressure_last_step_ms = g_pressure_stage_ms;
+    g_pressure_command = 0.0f;
+    pressure_control_reset();
+    pressure_filter_reset();
     g_pressure_active = true;
+    LOGI("[Pressure] Start target=%ldmmHg stage=fast",
+         (long)target_mmhg);
     return true;
 }
 
@@ -263,74 +425,131 @@ bool TreatmentHw_PressureStep(float target_mmhg, float *measured_mmhg)
     const PressureTuningProfile *profile = PressureTuning_ProfileForTarget(target_mmhg);
     int32_t raw;
     uint32_t now = HAL_GetTick();
+    uint32_t elapsed_ms = now - g_pressure_last_step_ms;
+    uint32_t stage_elapsed_ms = now - g_pressure_stage_ms;
+    float unfiltered_pressure;
+    float speed_switch;
+    float hold_switch;
+    float dt_s;
     float error;
     float command;
+    uint32_t retract_time_ms;
 
     if (!g_pressure_active || measured_mmhg == NULL ||
         !Ads1220Driver_ReadRaw(&raw)) {
-        (void)Tmc5130Driver_SetSpeed(0);
+        (void)pressure_set_speed(0.0f);
         return false;
     }
-    *measured_mmhg = Ads1220Driver_PressureFromRaw(raw, target_mmhg);
+    dt_s = elapsed_ms == 0U ? PRESSURE_STEP_DEFAULT_DT_S :
+           (float)elapsed_ms / 1000.0f;
+    dt_s = clamp_float(dt_s, PRESSURE_STEP_MIN_DT_S,
+                       PRESSURE_STEP_MAX_DT_S);
+    g_pressure_last_step_ms = now;
+
+    unfiltered_pressure = Ads1220Driver_PressureFromRaw(raw, target_mmhg);
+    *measured_mmhg = pressure_filter_update(unfiltered_pressure);
     g_ads_last_raw = raw;
     g_ads_last_pressure_x10 = (int32_t)(*measured_mmhg * 10.0f);
+    g_ads_last_unfiltered_pressure_x10 =
+        (int32_t)(unfiltered_pressure * 10.0f);
     g_ads_sample_valid = true;
-    if (*measured_mmhg >= APP_MAX_SAFE_PRESSURE_MMHG) {
+    if (unfiltered_pressure >= APP_MAX_SAFE_PRESSURE_MMHG) {
         g_ads_overpressure_pending = true;
+        (void)pressure_set_speed(0.0f);
+        /* Return the unfiltered value so the application safety check trips
+         * in this same cycle; filtering is never allowed to delay a fault. */
+        *measured_mmhg = unfiltered_pressure;
+        return true;
     }
     if (now - g_ads_last_log_ms >= APP_SENSOR_LOG_PERIOD_MS) {
         int32_t pressure_x10 = (int32_t)(*measured_mmhg * 10.0f);
-        LOGI("[ADS1220] raw=%ld zero=%ld pressure=%ld.%01ldmmHg target=%ld stage=%u",
+        LOGI("[ADS1220] raw=%ld zero=%ld pressure=%ld.%01ldmmHg target=%ld stage=%u speed=%ld",
              (long)raw, (long)Ads1220Driver_ZeroRaw(),
              (long)(pressure_x10 / 10), (long)(pressure_x10 % 10),
-             (long)target_mmhg, (unsigned)g_pressure_stage);
+             (long)target_mmhg, (unsigned)g_pressure_stage,
+             (long)g_pressure_command);
         g_ads_last_log_ms = now;
     }
 
+    speed_switch = target_mmhg * profile->speed_switch_percent * 0.01f;
+    hold_switch = target_mmhg * profile->hold_switch_percent * 0.01f;
+    retract_time_ms = profile->retract_ms;
+
     switch (g_pressure_stage) {
     case PRESS_STAGE_FAST:
-        if (*measured_mmhg >= profile->hold_threshold) {
-            /* A quick resume may start with residual load. Never issue even
-             * one fast-forward cycle when pressure is already at hold entry. */
-            if (!Tmc5130Driver_SetSpeed(0)) return false;
-            g_pressure_stage = PRESS_STAGE_HOLD;
+        error = target_mmhg - *measured_mmhg;
+        g_pressure_error = error;
+        if (*measured_mmhg >= speed_switch) {
+            g_pressure_stage = PRESS_STAGE_SLOW;
             g_pressure_stage_ms = now;
-            g_pressure_integral = 0.0f;
-        } else if (*measured_mmhg >= profile->approach_threshold) {
-            if (!Tmc5130Driver_SetSpeed((int32_t)profile->approach_speed)) return false;
-            g_pressure_stage = PRESS_STAGE_APPROACH;
-            g_pressure_stage_ms = now;
-        } else {
-            if (!Tmc5130Driver_SetSpeed((int32_t)profile->fast_speed)) return false;
+            LOGI("[Pressure] fast->slow pressure=%ld threshold=%ld",
+                 (long)*measured_mmhg, (long)speed_switch);
+            if (!pressure_set_speed(profile->approach_speed)) return false;
+        } else if (!pressure_set_speed(profile->fast_speed)) {
+            return false;
         }
         break;
-    case PRESS_STAGE_APPROACH:
-        if (!Tmc5130Driver_SetSpeed((int32_t)profile->approach_speed)) return false;
-        if (*measured_mmhg >= profile->hold_threshold) {
+    case PRESS_STAGE_SLOW:
+        error = target_mmhg - *measured_mmhg;
+        g_pressure_error = error;
+        if (*measured_mmhg >= hold_switch) {
             g_pressure_stage = PRESS_STAGE_HOLD;
             g_pressure_stage_ms = now;
-            g_pressure_integral = 0.0f;
+            pressure_control_reset();
+            g_pressure_error = error;
+            if (*measured_mmhg >= target_mmhg) {
+                g_pressure_hold_timer_started = true;
+                g_pressure_hold_started_ms = now;
+            }
+            command = pressure_control_command(profile, error, dt_s,
+                                               g_pressure_hold_timer_started);
+            LOGI("[Pressure] slow->PID hold pressure=%ld threshold=%ld timer=%s",
+                 (long)*measured_mmhg,
+                 (long)hold_switch,
+                 g_pressure_hold_timer_started ? "started" : "waiting-target");
+            if (!pressure_set_speed(command)) return false;
+        } else if (!pressure_set_speed(profile->approach_speed)) {
+            return false;
         }
         break;
     case PRESS_STAGE_HOLD:
         error = target_mmhg - *measured_mmhg;
-        g_pressure_integral += error * 0.02f;
-        if (g_pressure_integral > 5000.0f) g_pressure_integral = 5000.0f;
-        if (g_pressure_integral < -5000.0f) g_pressure_integral = -5000.0f;
-        command = profile->kp * error + profile->ki * g_pressure_integral;
-        if (command > 50000.0f) command = 50000.0f;
-        if (command < -50000.0f) command = -50000.0f;
-        if (!Tmc5130Driver_SetSpeed((int32_t)command)) return false;
-        if (now - g_pressure_stage_ms >= profile->hold_ms) {
+        g_pressure_error = error;
+        if (!g_pressure_hold_timer_started &&
+            *measured_mmhg >= target_mmhg) {
+            g_pressure_hold_timer_started = true;
+            g_pressure_hold_started_ms = now;
+            LOGI("[Pressure] hold target reached pressure=%ld timer=%lums",
+                 (long)*measured_mmhg,
+                 (unsigned long)PRESSURE_HOLD_TIME_MS);
+        }
+        if (g_pressure_hold_timer_started &&
+            now - g_pressure_hold_started_ms >= PRESSURE_HOLD_TIME_MS) {
+            if (!pressure_set_speed(0.0f)) return false;
             g_pressure_stage = PRESS_STAGE_RETRACT;
             g_pressure_stage_ms = now;
+            pressure_control_reset();
+            LOGI("[Pressure] hold->retract pressure=%ld held=%lums",
+                 (long)*measured_mmhg,
+                 (unsigned long)PRESSURE_HOLD_TIME_MS);
+        } else {
+            command = pressure_control_command(profile, error, dt_s,
+                                               g_pressure_hold_timer_started);
+            if (!pressure_set_speed(command)) return false;
         }
         break;
     case PRESS_STAGE_RETRACT:
-        if (!Tmc5130Driver_SetSpeed(-(int32_t)profile->retract_speed)) return false;
-        if (now - g_pressure_stage_ms >= profile->retract_ms) {
-            g_pressure_stage = PRESS_STAGE_APPROACH;
+        if (stage_elapsed_ms >= retract_time_ms) {
+            if (!pressure_set_speed(0.0f)) return false;
+            g_pressure_stage = PRESS_STAGE_FAST;
             g_pressure_stage_ms = now;
+            pressure_control_reset();
+            LOGI("[Pressure] retract->fast pressure=%ld elapsed=%lums limit=%lums",
+                 (long)*measured_mmhg,
+                 (unsigned long)stage_elapsed_ms,
+                 (unsigned long)retract_time_ms);
+        } else {
+            if (!pressure_set_speed(-profile->retract_speed)) return false;
         }
         break;
     default:
@@ -340,28 +559,36 @@ bool TreatmentHw_PressureStep(float target_mmhg, float *measured_mmhg)
 }
 
 bool TreatmentHw_PressureTelemetry(int32_t *raw, float *pressure_mmhg,
-                                   uint8_t *stage, bool *active)
+                                   uint8_t *stage, bool *active,
+                                   int32_t *speed_command,
+                                   float *control_error)
 {
     if (!g_ads_sample_valid || raw == NULL || pressure_mmhg == NULL ||
-        stage == NULL || active == NULL) {
+        stage == NULL || active == NULL || speed_command == NULL ||
+        control_error == NULL) {
         return false;
     }
     *raw = g_ads_last_raw;
     *pressure_mmhg = (float)g_ads_last_pressure_x10 / 10.0f;
     *stage = (uint8_t)g_pressure_stage;
     *active = g_pressure_active;
+    *speed_command = (int32_t)g_pressure_command;
+    *control_error = g_pressure_error;
     return true;
 }
 
 void TreatmentHw_PressureStop(void)
 {
     g_pressure_active = false;
+    g_pressure_command = 0.0f;
+    pressure_control_reset();
     Tmc5130Driver_Stop();
     if (g_ads_overpressure_pending) {
         LOGE("[ADS1220] Overpressure sample: raw=%ld zero=%ld pressure=%ld.%01ldmmHg stage=%u",
              (long)g_ads_last_raw, (long)Ads1220Driver_ZeroRaw(),
-             (long)(g_ads_last_pressure_x10 / 10),
-             (long)(g_ads_last_pressure_x10 % 10), (unsigned)g_pressure_stage);
+             (long)(g_ads_last_unfiltered_pressure_x10 / 10),
+             (long)(g_ads_last_unfiltered_pressure_x10 % 10),
+             (unsigned)g_pressure_stage);
         g_ads_overpressure_pending = false;
     }
 }

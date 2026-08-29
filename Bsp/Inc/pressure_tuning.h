@@ -12,9 +12,8 @@ typedef struct {
     float fast_speed;
     float approach_speed;
     float retract_speed;
-    float approach_threshold;
-    float hold_threshold;
-    uint32_t hold_ms;
+    float speed_switch_percent;
+    float hold_switch_percent;
     uint32_t retract_ms;
     float kp;
     float ki;

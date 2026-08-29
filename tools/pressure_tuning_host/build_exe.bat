@@ -19,5 +19,5 @@ if not exist ".venv\Scripts\python.exe" (
   .venv\Scripts\python.exe -m pip install -r requirements.txt
   if errorlevel 1 pause & exit /b 1
 )
-.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean --onefile --windowed --distpath dist_ram --workpath build_ram --name HTP100_Pressure_Tuning_Aging_EEPROM_TableSync_Host pressure_tuning_host.py
+.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean --onefile --windowed --distpath dist_ram --workpath build_ram_v8 --name HTP100_Pressure_Tuning_Aging_EEPROM_TableSync_Host_v8 pressure_tuning_host.py
 if errorlevel 1 pause

@@ -49,27 +49,26 @@ NEWTON_PER_MMHG = PASCAL_PER_MMHG * EFFECTIVE_AREA_MM2 * 1.0e-6
 
 
 APP_STATES = ["启动", "回零", "待机", "预热", "就绪", "治疗", "停止", "故障", "关机"]
-STAGES = {0: "快速前进", 1: "接近", 2: "保压", 3: "回退", 4: "完成", 0xFF: "未运行"}
+STAGES = {0: "快速前进", 1: "慢速前进", 2: "PID保压", 3: "回退", 0xFF: "未运行"}
 RANGES = ["≤200", "201–300", "301–400", "401–500", ">500"]
 COLUMNS = [
     ("灵敏度\nmV/V", "sensitivity_mv_v", 0.05, 5.0, 4),
     ("偏移量\nmmHg", "offset_mmhg", -200.0, 200.0, 1),
     ("快速速度", "fast_speed", 0.0, 65535.0, 0),
-    ("接近速度", "approach_speed", 0.0, 65535.0, 0),
+    ("慢速速度", "approach_speed", 0.0, 65535.0, 0),
     ("回退速度", "retract_speed", 0.0, 65535.0, 0),
-    ("接近阈值", "approach_threshold", 0.0, 650.0, 1),
-    ("保压阈值", "hold_threshold", 0.0, 650.0, 1),
-    ("保压时间\nms", "hold_ms", 0.0, 10000.0, 0),
     ("回退时间\nms", "retract_ms", 0.0, 10000.0, 0),
+    ("快慢切换\n目标%", "speed_switch_percent", 5.0, 100.0, 1),
+    ("PID切换\n目标%", "hold_switch_percent", 5.0, 100.0, 1),
     ("Kp", "kp", 0.0, 1000.0, 1),
     ("Ki", "ki", 0.0, 100.0, 1),
 ]
 DEFAULTS = [
-    [0.380, 0, 20000, 4000, 20000, 100, 110, 1000, 500, 180, 0],
-    [0.370, 0, 35000, 4000, 20000, 100, 110, 1000, 600, 600, 0],
-    [0.360, 0, 50000, 4000, 20000, 100, 110, 1000, 800, 600, 0],
-    [0.360, 0, 50000, 4000, 20000, 100, 110, 1000, 800, 600, 0],
-    [0.360, 0, 50000, 4000, 20000, 100, 110, 1000, 1000, 700, 0],
+    [0.380, 0, 20000, 6000, 15000, 30, 50, 500, 50, 0],
+    [0.370, 0, 30000, 9000, 18000, 90, 92, 600, 150, 0],
+    [0.370, 0, 40000, 9000, 20000, 65, 70, 800, 150, 0],
+    [0.370, 0, 45000, 9000, 20000, 55, 60, 800, 100, 0],
+    [0.370, 0, 45000, 9000, 20000, 50, 50, 1000, 100, 0],
 ]
 
 
@@ -468,8 +467,8 @@ class MainWindow(QMainWindow):
         self.telemetry_check.setChecked(True)
         self.telemetry_check.toggled.connect(self._set_telemetry)
         self.period = QSpinBox()
-        self.period.setRange(100, 2000)
-        self.period.setValue(100)
+        self.period.setRange(50, 2000)
+        self.period.setValue(50)
         self.period.setSuffix(" ms")
         self.period.valueChanged.connect(self._set_telemetry)
         controls.addWidget(self.telemetry_check, 2, 0)
@@ -479,6 +478,7 @@ class MainWindow(QMainWindow):
         controls.addWidget(clear_button, 2, 2)
         self.live_labels = {}
         fields = [("pressure", "压力"), ("temperature", "温度"),
+                  ("motor_speed", "电机速度指令"), ("pressure_error", "压力误差"),
                   ("heat_power", "加热功率"), ("heat_integral_output", "温控积分输出"),
                   ("raw", "ADC原始值"), ("zero", "零点原始值"),
                   ("stage", "压力阶段"), ("state", "设备状态"), ("eye", "眼盾/回零"),
@@ -583,22 +583,25 @@ class MainWindow(QMainWindow):
     def _queue_entire_table_to_ram(self) -> bool:
         profiles = [self._get_profile(row) for row in range(5)]
         for row, values in enumerate(profiles):
-            if values["hold_threshold"] < values["approach_threshold"]:
+            if values["hold_switch_percent"] < values["speed_switch_percent"]:
                 QMessageBox.critical(
                     self, "参数错误",
-                    f"第 {row + 1} 挡保压阈值不能小于接近阈值。")
+                    f"第 {row + 1} 挡 PID 切换百分比不能小于快慢切换百分比。")
                 return False
 
-        # Thresholds are interdependent in firmware. Move approach to zero
-        # first, then commit hold and finally the requested approach value, so
-        # a valid imported row cannot be rejected because of the old RAM row.
+        # Two percentage fields constrain one another. Put each device row in
+        # a safe temporary state before writing the requested pair.
         for row, values in enumerate(profiles):
             self._queue_ack(
                 CMD_SET_FIELD,
-                encode_profile_field(row, "approach_threshold", 0.0),
-                f"整表同步第 {row + 1} 挡临时接近阈值=0")
+                encode_profile_field(row, "speed_switch_percent", 5.0),
+                f"整表同步第 {row + 1} 挡临时快慢切换=5%")
+            self._queue_ack(
+                CMD_SET_FIELD,
+                encode_profile_field(row, "hold_switch_percent", 100.0),
+                f"整表同步第 {row + 1} 挡临时PID切换=100%")
             for field in PROFILE_KEYS:
-                if field in ("approach_threshold", "hold_threshold"):
+                if field in ("speed_switch_percent", "hold_switch_percent"):
                     continue
                 value = values[field]
                 self._queue_ack(
@@ -606,12 +609,14 @@ class MainWindow(QMainWindow):
                     f"整表同步第 {row + 1} 挡 {field}={value:g}")
             self._queue_ack(
                 CMD_SET_FIELD,
-                encode_profile_field(row, "hold_threshold", values["hold_threshold"]),
-                f"整表同步第 {row + 1} 挡 hold_threshold={values['hold_threshold']:g}")
+                encode_profile_field(
+                    row, "hold_switch_percent", values["hold_switch_percent"]),
+                f"整表同步第 {row + 1} 挡 PID切换={values['hold_switch_percent']:g}%")
             self._queue_ack(
                 CMD_SET_FIELD,
-                encode_profile_field(row, "approach_threshold", values["approach_threshold"]),
-                f"整表同步第 {row + 1} 挡 approach_threshold={values['approach_threshold']:g}")
+                encode_profile_field(
+                    row, "speed_switch_percent", values["speed_switch_percent"]),
+                f"整表同步第 {row + 1} 挡 快慢切换={values['speed_switch_percent']:g}%")
         return True
 
     def _log(self, message: str, level: str = "INFO") -> None:
@@ -1157,6 +1162,13 @@ class MainWindow(QMainWindow):
         self.live_labels["heat_integral_output"].setText(
             f"{heat_integral_output:.2f} PWM ({heat_integral_output_percent:.1f} %)"
             if heat_integral_output is not None else "旧固件未提供")
+        speed_command = data.get("motor_speed_command")
+        pressure_error = data.get("pressure_error")
+        self.live_labels["motor_speed"].setText(
+            f"{speed_command:+d}" if speed_command is not None else "旧固件未提供")
+        self.live_labels["pressure_error"].setText(
+            f"{pressure_error:+.1f} mmHg"
+            if pressure_error is not None else "旧固件未提供")
         self.live_labels["raw"].setText(str(data["raw"]))
         self.live_labels["zero"].setText(f"{data['zero_raw']}（{'有效' if data['zero_valid'] else '无效'}）")
         self.live_labels["stage"].setText(STAGES.get(data["stage"], str(data["stage"])))
@@ -1275,7 +1287,7 @@ class MainWindow(QMainWindow):
         if not path:
             return
         data = {
-            "format": "HTP100-pressure-profile-v1",
+            "format": "HTP100-pressure-profile-v8",
             "profiles": [self._get_profile(row) for row in range(5)],
             "heat_pid": {
                 key: widget.value() for key, widget in self.heat_pid_widgets.items()
@@ -1294,10 +1306,16 @@ class MainWindow(QMainWindow):
             return
         try:
             data = json.loads(Path(path).read_text(encoding="utf-8"))
+            if data.get("format") != "HTP100-pressure-profile-v8":
+                raise ValueError("旧版压力参数含义已变更，请使用 v8 配置或程序默认值")
             profiles = data["profiles"]
             if len(profiles) != 5:
                 raise ValueError("配置必须恰好包含五挡参数")
             for row, values in enumerate(profiles):
+                missing = [key for key in PROFILE_KEYS if key not in values]
+                if missing:
+                    raise ValueError(
+                        f"第 {row + 1} 挡缺少参数：{', '.join(missing)}")
                 self._set_profile(row, values)
             heat_pid = data.get("heat_pid")
             if isinstance(heat_pid, dict):

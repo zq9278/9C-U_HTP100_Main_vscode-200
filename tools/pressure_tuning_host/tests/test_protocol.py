@@ -27,7 +27,9 @@ class ProtocolTests(unittest.TestCase):
 
     def test_profile_round_trip(self):
         values = {key: float(index + 1) for index, key in enumerate(PROFILE_KEYS)}
-        index, decoded = decode_profile(encode_profile(3, values))
+        payload = encode_profile(3, values)
+        self.assertEqual(len(payload), 41)
+        index, decoded = decode_profile(payload)
         self.assertEqual(index, 3)
         for key in PROFILE_KEYS:
             self.assertTrue(math.isclose(values[key], decoded[key], rel_tol=1e-6))
@@ -36,7 +38,7 @@ class ProtocolTests(unittest.TestCase):
         payload = encode_profile_field(2, "kp", 123.5)
         self.assertEqual(len(payload), 6)
         profile, field, value = struct.unpack("<BBf", payload)
-        self.assertEqual((profile, field), (2, 9))
+        self.assertEqual((profile, field), (2, 8))
         self.assertAlmostEqual(value, 123.5)
 
     def test_heat_pid_round_trip(self):
@@ -83,6 +85,17 @@ class ProtocolTests(unittest.TestCase):
         data = decode_telemetry(payload)
         self.assertAlmostEqual(data["heat_power_percent"], 63.25)
         self.assertAlmostEqual(data["heat_integral_output"], 18.75)
+
+    def test_pressure_control_telemetry_layout(self):
+        payload = struct.pack("<IffiiBBBHBB", 123, 350.0, 348.5, 1000, 900,
+                              1, 1, 5, 0, 1, 1)
+        payload += struct.pack("<BBBBBHH", 2, 1, 1, 0, 1, 88, 4117)
+        payload += struct.pack("<ffB", 42.5, 41.875, 1)
+        payload += struct.pack("<ff", 63.25, 18.75)
+        payload += struct.pack("<if", -1450, 1.5)
+        data = decode_telemetry(payload)
+        self.assertEqual(data["motor_speed_command"], -1450)
+        self.assertAlmostEqual(data["pressure_error"], 1.5)
 
     def test_screen_work_frame_is_separate(self):
         frame = build_screen_work_frame(0x1037, 350.0)

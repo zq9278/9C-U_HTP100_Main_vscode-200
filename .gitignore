@@ -15,3 +15,11 @@ __pycache__/
 *.pyc
 .venv/
 *.spec
+tools/pressure_tuning_host/build_ram/HTP100_Pressure_Tuning_Aging_EEPROM_TableSync_Host/
+tools/pressure_tuning_host/build_ram_v2/
+tools/pressure_tuning_host/build_ram_v3/
+tools/pressure_tuning_host/build_ram_v4/
+tools/pressure_tuning_host/build_ram_v5/
+tools/pressure_tuning_host/build_ram_v6/
+tools/pressure_tuning_host/build_ram_v7/
+tools/pressure_tuning_host/build_ram_v8/

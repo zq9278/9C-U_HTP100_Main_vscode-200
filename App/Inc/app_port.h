@@ -15,7 +15,10 @@ typedef enum {
     APP_LED_WARNING,
     APP_LED_CHARGING,
     APP_LED_FULL,
-    APP_LED_FAULT
+    APP_LED_FAULT,
+    APP_LED_TEST_RUNNING,
+    APP_LED_TEST_PASS,
+    APP_LED_TEST_FAIL
 } AppLedState;
 
 typedef struct {
@@ -44,6 +47,7 @@ typedef struct {
     void (*screen_u16)(uint16_t command, uint16_t value);
     void (*screen_u32)(uint16_t command, uint32_t value);
     void (*fault_report)(AppFault fault);
+    bool (*heater_test_max)(float *measured_c);
 } AppPort;
 
 #endif

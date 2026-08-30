@@ -100,7 +100,8 @@ static const AppPort g_port = {
     .screen_float = ScreenProtocol_SendFloat,
     .screen_u16 = ScreenProtocol_SendU16,
     .screen_u32 = ScreenProtocol_SendU32,
-    .fault_report = board_fault_report
+    .fault_report = board_fault_report,
+    .heater_test_max = TreatmentHw_HeaterTestMax
 };
 
 bool Board_Init(void)

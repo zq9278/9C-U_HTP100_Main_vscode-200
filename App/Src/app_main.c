@@ -5,6 +5,7 @@
 #include "app_controller.h"
 #include "app_log.h"
 #include "board_port.h"
+#include "eye_test.h"
 #include "eye_driver.h"
 #include "main.h"
 #include "product_config.h"
@@ -12,6 +13,7 @@
 #include "task.h"
 #include "tuning_protocol.h"
 
+#if !PRODUCT_I2C_EYE_TEST_ENABLED
 static void handle_button(void)
 {
     const AppSnapshot *status = AppController_Status();
@@ -22,18 +24,50 @@ static void handle_button(void)
         AppController_Stop(APP_STOP_USER);
     }
 }
+#endif
+
+#if PRODUCT_I2C_EYE_TEST_ENABLED
+static void run_i2c_eye_test(void)
+{
+    uint32_t last_eye_ms = 0U;
+
+    EyeTest_Init(Board_AppPort());
+    for (;;) {
+        uint32_t now = HAL_GetTick();
+
+        if (now - last_eye_ms >= APP_EYE_POLL_PERIOD_MS) {
+            AppEyeState eye;
+
+            last_eye_ms = now;
+            eye = Board_AppPort()->eye_read_state();
+            if (EyeDriver_InitialStateConfirmed()) {
+                EyeTest_SetEyeState(eye);
+            }
+        }
+        if (Board_TakePowerLossEvent()) {
+            EyeTest_Abort();
+        }
+        EyeTest_Tick();
+        Board_Tick();
+        vTaskDelay(pdMS_TO_TICKS(10U));
+    }
+}
+#endif
 
 void AppMain_Task(void *argument)
 {
+#if !PRODUCT_I2C_EYE_TEST_ENABLED
     uint8_t serial_data[128];
     uint32_t last_eye_ms = 0U;
     uint32_t last_power_ms = 0U;
+#endif
 
     (void)argument;
     AppLog_Init();
-    LOGI("%s firmware boot, version=%lu, eye_fuse=%u",
+    LOGI("%s firmware boot, version=%lu, eye_fuse=%u, eye_test=%u",
          PRODUCT_MODEL_NAME, (unsigned long)PRODUCT_VERSION_NUMBER,
-         (unsigned)PRODUCT_EYE_FUSE_ENABLED);
+         (unsigned)PRODUCT_EYE_FUSE_ENABLED,
+         (unsigned)PRODUCT_I2C_EYE_TEST_ENABLED);
     if (!Board_Init()) {
         LOGE("Board initialization failed");
         for (;;) {
@@ -41,6 +75,9 @@ void AppMain_Task(void *argument)
         }
     }
     LOGI("Board initialization complete");
+#if PRODUCT_I2C_EYE_TEST_ENABLED
+    run_i2c_eye_test();
+#else
     ScreenProtocol_Init(Board_ScreenWrite);
     /* The tuning protocol shares USART2 with the real screen. Its 7A A7
      * header is deliberately distinct from the screen's 5A A5 / 6A A6. */
@@ -85,4 +122,5 @@ void AppMain_Task(void *argument)
         Board_Tick();
         vTaskDelay(pdMS_TO_TICKS(10U));
     }
+#endif
 }

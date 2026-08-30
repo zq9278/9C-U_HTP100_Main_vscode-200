@@ -66,6 +66,10 @@ void Ws2812Driver_Set(AppLedState state, bool blink)
     AppLedState previous = g_requested;
     bool previous_blink = g_blink;
 
+    if (state == APP_LED_TEST_RUNNING || state == APP_LED_TEST_PASS ||
+        state == APP_LED_TEST_FAIL) {
+        g_fault_flash_active = false;
+    }
     if (state == APP_LED_CHARGING || state == APP_LED_FULL) {
         g_fault_flash_active = false;
     } else if (state == APP_LED_FAULT && g_requested != APP_LED_FAULT &&
@@ -142,6 +146,10 @@ void Ws2812Driver_Tick(void)
     case APP_LED_CHARGING: color = 0x020202U; break;
     case APP_LED_FULL:     color = 0x222222U; break;
     case APP_LED_FAULT:    color = 0x222222U; break;
+    /* WS2812 frame order is G-R-B. */
+    case APP_LED_TEST_RUNNING: color = 0x000080U; break;
+    case APP_LED_TEST_PASS:    color = 0x800000U; break;
+    case APP_LED_TEST_FAIL:    color = 0x008000U; break;
     case APP_LED_IDLE:
     default:               color = 0x222222U; break;
     }

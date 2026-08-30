@@ -289,6 +289,21 @@ bool TreatmentHw_HeaterControl(float target_c, float *measured_c)
     return g_heat_pwm_started;
 }
 
+bool TreatmentHw_HeaterTestMax(float *measured_c)
+{
+    if (!EyeDriver_ReadTemperature(measured_c)) {
+        TreatmentHw_SafeOutputsOff();
+        return false;
+    }
+    __HAL_TIM_SET_COMPARE(&htim14, TIM_CHANNEL_1, 254U);
+    if (!g_heat_pwm_started) {
+        g_heat_pwm_started =
+            HAL_TIM_PWM_Start(&htim14, TIM_CHANNEL_1) == HAL_OK;
+    }
+    g_heat_power_percent = g_heat_pwm_started ? 100.0f : 0.0f;
+    return g_heat_pwm_started;
+}
+
 bool TreatmentHw_SetHeatPid(float kp, float ki, float kd)
 {
     if (!isfinite(kp) || !isfinite(ki) || !isfinite(kd) ||

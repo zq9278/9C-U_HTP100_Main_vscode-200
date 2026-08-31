@@ -7,8 +7,9 @@
 - the same uninterrupted insertion session can start another treatment;
 - removal followed by reinsertion exposes the consumed marker and blocks treatment;
 - only a natural finish increments the treatment counter;
-- successful heat sampling exposes a valid measured temperature for telemetry,
-  and homing clears that validity;
+- temperature compensation raises the heater control target and lowers only
+  the LCD measured-temperature display by the same amount; tuning telemetry
+  retains the real sensor sample, and homing clears its validity;
 - user stop, charging, fault, power loss and critical battery all enter homing;
 - external power blocks treatment;
 - critical battery performs homing before requesting the hardware power latch off.

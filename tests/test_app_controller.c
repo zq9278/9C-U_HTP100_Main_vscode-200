@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <string.h>
 
+#include "app_config.h"
 #include "app_controller.h"
 #include "product_config.h"
 
@@ -22,12 +23,20 @@ static unsigned power_off_count;
 static unsigned pressure_start_count;
 static unsigned eye_screen_count;
 static unsigned new_eye_screen_count;
+static unsigned temperature_screen_count;
 static float last_eye_screen_value;
+static float last_heat_target;
+static float last_temperature_screen_value;
 static AppLedState last_led;
 
 static uint32_t now_ms(void) { return fake_now; }
 static void outputs_off(void) { }
-static bool heat(float target, float *measured) { *measured = target; return true; }
+static bool heat(float target, float *measured)
+{
+    last_heat_target = target;
+    *measured = target;
+    return true;
+}
 static bool pressure_start(float target) { (void)target; pressure_start_count++; return true; }
 static bool pressure_step(float target, float *measured) { *measured = target; return true; }
 static void pressure_stop(void) { }
@@ -53,6 +62,9 @@ static void screen_float(uint16_t command, float value)
         last_eye_screen_value = value;
     } else if (command == 0x2057U) {
         new_eye_screen_count++;
+    } else if (command == 0x2037U || command == 0x2041U) {
+        temperature_screen_count++;
+        last_temperature_screen_value = value;
     }
 }
 static void screen_u16(uint16_t command, uint16_t value) { (void)command; (void)value; }
@@ -75,7 +87,10 @@ static void reset_fixture(void)
     treatment_count = power_off_count = pressure_start_count = 0U;
     eye_screen_count = 0U;
     new_eye_screen_count = 0U;
+    temperature_screen_count = 0U;
     last_eye_screen_value = -1.0f;
+    last_heat_target = -1.0f;
+    last_temperature_screen_value = -1.0f;
     last_led = APP_LED_IDLE;
     AppController_Init(&port);
     fake_home_result = APP_ASYNC_OK;
@@ -132,6 +147,19 @@ static void test_reinserted_consumed_eye_is_rejected(void)
     assert(!AppController_Prepare(APP_MODE_HEAT, 0.0f));
 }
 
+static void test_eye_offline_state_is_repeated_to_screen(void)
+{
+    unsigned before;
+
+    reset_fixture();
+    AppController_SetEyeState(APP_EYE_ABSENT);
+    before = eye_screen_count;
+    AppController_SetEyeState(APP_EYE_ABSENT);
+    AppController_SetEyeState(APP_EYE_ABSENT);
+    assert(eye_screen_count == before + 2U);
+    assert(last_eye_screen_value == 0.0f);
+}
+
 static void test_only_natural_finish_counts(void)
 {
     reset_fixture();
@@ -142,15 +170,27 @@ static void test_only_natural_finish_counts(void)
     assert(home_begin_count == 2U);
 }
 
-static void test_temperature_telemetry_tracks_heat_sample(void)
+static void test_temperature_compensation_controls_and_offsets_lcd(void)
 {
     reset_fixture();
     assert(AppController_Prepare(APP_MODE_AUTO, 350.0f));
     assert(!AppController_Status()->temperature_valid);
-    fake_now = 150U;
+    fake_now = 300U;
     AppController_Tick();
     assert(AppController_Status()->temperature_valid);
-    assert(AppController_Status()->measured_temperature_c == 40.0f);
+    assert(last_heat_target ==
+           APP_PREHEAT_TARGET_C + PRODUCT_TEMPERATURE_CONTROL_COMPENSATION_C);
+    assert(AppController_Status()->measured_temperature_c == last_heat_target);
+    assert(temperature_screen_count == 1U);
+    assert(last_temperature_screen_value == APP_PREHEAT_TARGET_C);
+
+    assert(AppController_Start());
+    fake_now = 450U;
+    AppController_Tick();
+    assert(AppController_Status()->settings.temperature_c ==
+           APP_DEFAULT_TREATMENT_TEMP_C);
+    assert(last_heat_target == APP_DEFAULT_TREATMENT_TEMP_C +
+                               PRODUCT_TEMPERATURE_CONTROL_COMPENSATION_C);
     AppController_Stop(APP_STOP_USER);
     assert(!AppController_Status()->temperature_valid);
 }
@@ -259,8 +299,9 @@ int main(void)
 {
     test_eye_is_consumed_only_at_formal_start();
     test_reinserted_consumed_eye_is_rejected();
+    test_eye_offline_state_is_repeated_to_screen();
     test_only_natural_finish_counts();
-    test_temperature_telemetry_tracks_heat_sample();
+    test_temperature_compensation_controls_and_offsets_lcd();
     test_charging_blocks_and_interrupts_treatment();
     test_charge_done_uses_full_led();
     test_low_voltage_homes_then_cuts_power();

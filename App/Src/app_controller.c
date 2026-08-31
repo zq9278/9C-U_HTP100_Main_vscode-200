@@ -32,7 +32,6 @@ typedef struct {
     bool tmp112_recovery_confirmed;
     uint32_t over_temperature_started_ms;
     bool over_temperature_timing;
-    bool eye_screen_synced;
     uint8_t low_voltage_samples;
     bool count_recorded;
     bool pending_power_off;
@@ -367,10 +366,8 @@ void AppController_SetEyeState(AppEyeState eye)
     bool changed = eye != previous;
 
     if (previous == APP_EYE_IN_USE && eye != APP_EYE_ABSENT) {
-        if (!g_app.eye_screen_synced && g_app.port != NULL &&
-            g_app.port->screen_float != NULL) {
+        if (g_app.port != NULL && g_app.port->screen_float != NULL) {
             g_app.port->screen_float(SCREEN_EYE_STATE, 1.0f);
-            g_app.eye_screen_synced = true;
         }
         return;
     }
@@ -381,11 +378,12 @@ void AppController_SetEyeState(AppEyeState eye)
     if (previous == APP_EYE_ABSENT && eye != APP_EYE_ABSENT) {
         g_app.tmp112_recovery_confirmed = true;
     }
-    if ((!g_app.eye_screen_synced || changed) &&
-        g_app.port != NULL && g_app.port->screen_float != NULL) {
+    /* Keep refreshing the LCD eye state on every eye poll. The LCD protocol
+     * has no acknowledgement, so a one-shot state-change frame is not enough
+     * to guarantee that an unplug event is displayed. */
+    if (g_app.port != NULL && g_app.port->screen_float != NULL) {
         g_app.port->screen_float(SCREEN_EYE_STATE,
                                 eye_is_screen_online(eye) ? 1.0f : 0.0f);
-        g_app.eye_screen_synced = true;
         if (eye == APP_EYE_NEW && changed) {
             g_app.port->screen_float(SCREEN_NEW_EYE, 0.0f);
         }
@@ -510,7 +508,6 @@ bool AppController_DebugMode(void)
 
 void AppController_ScreenBoot(void)
 {
-    g_app.eye_screen_synced = false;
     if (g_app.port != NULL && g_app.port->screen_boot_sync != NULL) {
         g_app.port->screen_boot_sync();
     }
@@ -603,6 +600,7 @@ static void tick_heat(uint32_t now)
 {
     float measured = 0.0f;
     float target;
+    float control_target;
 
     if (!mode_uses_heat(g_app.status.mode) ||
         (g_app.status.state != APP_STATE_PREHEAT && g_app.status.state != APP_STATE_RUNNING) ||
@@ -612,8 +610,9 @@ static void tick_heat(uint32_t now)
     g_app.last_heat_ms = now;
     target = g_app.status.state == APP_STATE_PREHEAT ? APP_PREHEAT_TARGET_C :
                                                      g_app.status.settings.temperature_c;
+    control_target = target + PRODUCT_TEMPERATURE_CONTROL_COMPENSATION_C;
     if (g_app.port == NULL || g_app.port->heater_control == NULL ||
-        !g_app.port->heater_control(target, &measured)) {
+        !g_app.port->heater_control(control_target, &measured)) {
         g_app.status.temperature_valid = false;
         AppController_RaiseFault(APP_FAULT_TMP112_COMM);
         return;
@@ -652,15 +651,19 @@ static void tick_heat(uint32_t now)
     }
     if (now - g_app.last_temp_display_ms >= APP_TEMP_DISPLAY_PERIOD_MS) {
         send_float(g_app.status.mode == APP_MODE_AUTO ? SCREEN_TEMP_AUTO : SCREEN_TEMP_HEAT,
-                   g_app.display_temperature_c);
+                   g_app.display_temperature_c -
+                   PRODUCT_TEMPERATURE_CONTROL_COMPENSATION_C);
         g_app.last_temp_display_ms = now;
     }
     if (now - g_app.last_temp_log_ms >= APP_SENSOR_LOG_PERIOD_MS) {
         int32_t measured_x10 = (int32_t)(measured * 10.0f);
         int32_t target_x10 = (int32_t)(target * 10.0f);
-        LOGI("[Temp] measured=%ld.%01ldC target=%ld.%01ldC",
+        int32_t control_target_x10 = (int32_t)(control_target * 10.0f);
+        LOGI("[Temp] measured=%ld.%01ldC target=%ld.%01ldC control_target=%ld.%01ldC",
              (long)(measured_x10 / 10), (long)(measured_x10 % 10),
-             (long)(target_x10 / 10), (long)(target_x10 % 10));
+             (long)(target_x10 / 10), (long)(target_x10 % 10),
+             (long)(control_target_x10 / 10),
+             (long)(control_target_x10 % 10));
         g_app.last_temp_log_ms = now;
     }
 }

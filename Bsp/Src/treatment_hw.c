@@ -414,6 +414,7 @@ bool TreatmentHw_PressureStart(float target_mmhg)
     g_pressure_command = 0.0f;
     pressure_control_reset();
     pressure_filter_reset();
+    g_ads_sample_valid = false;
     g_pressure_active = true;
     LOGI("[Pressure] Start target=%ldmmHg stage=fast",
          (long)target_mmhg);

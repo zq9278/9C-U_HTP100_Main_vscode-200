@@ -9,8 +9,27 @@
 #include "main.h"
 #include "product_config.h"
 #include "screen_protocol.h"
+#include "storage_driver.h"
 #include "task.h"
 #include "tuning_protocol.h"
+
+#define SCREEN_EARLY_BOOT_WINDOW_MS 250U
+
+static void reply_language_before_board_init(void)
+{
+    uint8_t serial_data[128];
+    uint32_t started_ms = HAL_GetTick();
+
+    StorageDriver_PreparePins();
+    do {
+        size_t received = Board_ScreenRead(serial_data, sizeof(serial_data));
+        if (received != 0U &&
+            ScreenProtocol_EarlyBootReply(serial_data, received)) {
+            return;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1U));
+    } while (HAL_GetTick() - started_ms < SCREEN_EARLY_BOOT_WINDOW_MS);
+}
 
 static void handle_button(void)
 {
@@ -30,6 +49,8 @@ void AppMain_Task(void *argument)
     uint32_t last_power_ms = 0U;
 
     (void)argument;
+    ScreenProtocol_Init(Board_ScreenWrite);
+    reply_language_before_board_init();
     AppLog_Init();
     LOGI("%s firmware boot, version=%lu, eye_fuse=%u",
          PRODUCT_MODEL_NAME, (unsigned long)PRODUCT_VERSION_NUMBER,
@@ -41,6 +62,7 @@ void AppMain_Task(void *argument)
         }
     }
     LOGI("Board initialization complete");
+    /* Reset the stream parser after the early, language-only handshake. */
     ScreenProtocol_Init(Board_ScreenWrite);
     /* The tuning protocol shares USART2 with the real screen. Its 7A A7
      * header is deliberately distinct from the screen's 5A A5 / 6A A6. */

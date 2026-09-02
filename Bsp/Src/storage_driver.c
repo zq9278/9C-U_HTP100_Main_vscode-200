@@ -283,8 +283,8 @@ void StorageDriver_ScreenBootSync(void)
     ScreenProtocol_SendU16(0x00A2U, g_counters[2]);
     ScreenProtocol_SendU16(0x00A3U, selected);
     ScreenProtocol_SendU16(0x00ACU, 1U);
-    ScreenProtocol_SendU16(0x00A4U, pressure);
-    ScreenProtocol_SendU16(0x00A5U, temperature);
+    ScreenProtocol_SendU16(0x00A4U, temperature);
+    ScreenProtocol_SendU16(0x00A5U, pressure);
     ScreenProtocol_SendU16(0x00A6U, runtime);
     ScreenProtocol_SendU16(0x00A7U, StorageDriver_ReadU16(0xF8U, 1U));
 }

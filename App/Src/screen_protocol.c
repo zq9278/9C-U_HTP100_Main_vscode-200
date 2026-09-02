@@ -6,6 +6,7 @@
 #include "app_controller.h"
 #include "app_log.h"
 #include "product_config.h"
+#include "storage_driver.h"
 
 #define WORK_HEADER_0      0x5AU
 #define WORK_HEADER_1      0xA5U
@@ -47,8 +48,8 @@ static void send_preset(uint16_t preset, bool edit_response)
         ScreenProtocol_SendU16(0x00A9U, pressure);
         ScreenProtocol_SendU16(0x00A8U, temperature);
     } else {
-        ScreenProtocol_SendU16(0x00A4U, pressure);
-        ScreenProtocol_SendU16(0x00A5U, temperature);
+        ScreenProtocol_SendU16(0x00A4U, temperature);
+        ScreenProtocol_SendU16(0x00A5U, pressure);
     }
     ScreenProtocol_SendU16(edit_response ? 0x00AAU : 0x00A6U, runtime);
 }
@@ -115,10 +116,12 @@ static void handle_work_frame(const uint8_t *frame)
         AppController_Stop(APP_STOP_USER);
         break;
     case 0x1050U:
+        /* Language is deliberately the first response. The screen caches it
+         * before LVGL creates its first visible frame. */
+        ScreenProtocol_SendU16(0x00ABU, AppController_StorageRead(0x06U, 1U));
         ScreenProtocol_SendU16(0x00ADU, 1U);
         AppController_ScreenBoot();
         ScreenProtocol_SendU32(0x2060U, PRODUCT_VERSION_NUMBER);
-        ScreenProtocol_SendU16(0x00ABU, AppController_StorageRead(0x06U, 1U));
         break;
     case 0x1051U:
     case 0x1052U:
@@ -216,6 +219,28 @@ void ScreenProtocol_Init(ScreenWriteFn write_fn)
     g_write = write_fn;
     g_rx_length = 0U;
     g_edit_preset = 0U;
+}
+
+bool ScreenProtocol_EarlyBootReply(const uint8_t *data, size_t length)
+{
+    if (data == NULL || length < WORK_FRAME_SIZE) {
+        return false;
+    }
+    for (size_t offset = 0U; offset + WORK_FRAME_SIZE <= length; ++offset) {
+        const uint8_t *frame = &data[offset];
+
+        if (frame[0] == WORK_HEADER_0 && frame[1] == WORK_HEADER_1 &&
+            frame_is_valid(frame, WORK_FRAME_SIZE) &&
+            frame_command(frame) == 0x1050U) {
+            /* This path runs before Board_Init/AppController_Init. Only the
+             * persisted language is safe and necessary at this point. Do not
+             * acknowledge yet: the normal retry performs the full boot sync. */
+            ScreenProtocol_SendU16(0x00ABU,
+                                   StorageDriver_ReadU16(0x06U, 1U));
+            return true;
+        }
+    }
+    return false;
 }
 
 void ScreenProtocol_Feed(const uint8_t *data, size_t length)

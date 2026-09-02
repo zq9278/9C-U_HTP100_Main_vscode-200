@@ -31,6 +31,8 @@ typedef struct {
     float display_temperature_c;
     bool display_temperature_valid;
     bool tmp112_recovery_confirmed;
+    uint32_t temp_comm_failure_started_ms;
+    bool temp_comm_failure_timing;
     uint32_t over_temperature_started_ms;
     bool over_temperature_timing;
     uint8_t low_voltage_samples;
@@ -64,6 +66,29 @@ static bool eye_is_screen_online(AppEyeState eye)
 {
     return eye == APP_EYE_NEW || eye == APP_EYE_IN_USE ||
            eye == APP_EYE_SERVICE;
+}
+
+static void report_fault_if_eye_online(AppFault fault)
+{
+    if (!eye_is_screen_online(g_app.status.eye)) {
+        LOGW("[Screen TX] Fault suppressed while eye is offline: 0x%08lX",
+             (unsigned long)fault);
+        return;
+    }
+    if (g_app.port != NULL && g_app.port->fault_report != NULL) {
+        g_app.port->fault_report(fault);
+    }
+}
+
+static void clear_screen_fault_before_eye_offline(void)
+{
+#if APP_ENABLE_SCREEN_FAULT_REPORT
+    if (g_app.port != NULL && g_app.port->screen_u32 != NULL) {
+        /* Clear a previously displayed fault first so 0x2055 offline becomes
+         * the screen's only active popup. */
+        g_app.port->screen_u32(SCREEN_FAULT_STATUS, 0U);
+    }
+#endif
 }
 
 static bool treatment_is_open(void)
@@ -104,6 +129,16 @@ static void set_led(void)
         blink = true;
     }
     g_app.port->led_set(led, blink);
+}
+
+static void request_yellow_warning_flash(void)
+{
+    if (!g_app.status.charging &&
+        g_app.port != NULL && g_app.port->led_set != NULL) {
+        /* APP_LED_FAULT starts the WS2812 driver's three-flash yellow pattern.
+         * A following set_led() changes the steady state without cancelling it. */
+        g_app.port->led_set(APP_LED_FAULT, false);
+    }
 }
 
 static void try_clear_tmp112_fault(void)
@@ -157,6 +192,7 @@ static void begin_home(void)
     g_app.status.home_valid = false;
     g_app.status.pressure_zero_valid = false;
     g_app.status.temperature_valid = false;
+    g_app.temp_comm_failure_timing = false;
     g_app.home_started = false;
 
     if (g_app.port != NULL && g_app.port->home_begin != NULL && g_app.port->home_begin()) {
@@ -165,9 +201,7 @@ static void begin_home(void)
         LOGE("[Motor] Homing start failed");
         g_app.status.fault = APP_FAULT_MOTOR_COMM;
         g_app.status.state = APP_STATE_FAULT;
-        if (g_app.port != NULL && g_app.port->fault_report != NULL) {
-            g_app.port->fault_report(APP_FAULT_MOTOR_COMM);
-        }
+        report_fault_if_eye_online(APP_FAULT_MOTOR_COMM);
         if (g_app.pending_power_off && g_app.port != NULL && g_app.port->power_latch_off != NULL) {
             g_app.port->power_latch_off();
         }
@@ -331,6 +365,10 @@ void AppController_Stop(AppStopReason reason)
         g_app.port->screen_float(SCREEN_TIMER_STOP, 0.0f);
         g_app.port->screen_float(SCREEN_WORK_QUIT, 0.0f);
     }
+    if (reason == APP_STOP_USER) {
+        request_yellow_warning_flash();
+        LOGI("[LED] Manual stop yellow warning flash requested");
+    }
     if (reason == APP_STOP_POWER_LOSS || reason == APP_STOP_LOW_BATTERY) {
         g_app.pending_power_off = true;
     }
@@ -355,9 +393,8 @@ void AppController_RaiseFault(AppFault fault)
     }
     /* If homing itself failed, begin_home() has replaced and reported the
      * more relevant motor fault already. */
-    if (g_app.status.fault == fault &&
-        g_app.port != NULL && g_app.port->fault_report != NULL) {
-        g_app.port->fault_report(fault);
+    if (g_app.status.fault == fault) {
+        report_fault_if_eye_online(fault);
     }
 }
 
@@ -382,6 +419,9 @@ void AppController_SetEyeState(AppEyeState eye)
     /* Keep refreshing the LCD eye state on every eye poll. The LCD protocol
      * has no acknowledgement, so a one-shot state-change frame is not enough
      * to guarantee that an unplug event is displayed. */
+    if (!eye_is_screen_online(eye)) {
+        clear_screen_fault_before_eye_offline();
+    }
     if (g_app.port != NULL && g_app.port->screen_float != NULL) {
         g_app.port->screen_float(SCREEN_EYE_STATE,
                                 eye_is_screen_online(eye) ? 1.0f : 0.0f);
@@ -393,10 +433,7 @@ void AppController_SetEyeState(AppEyeState eye)
         /* Eye removal is a recoverable treatment interruption, not a latched
          * fault. Reuse the board's three-flash warning pattern before the
          * normal stop path returns the LEDs to idle white. */
-        if (!g_app.status.charging &&
-            g_app.port != NULL && g_app.port->led_set != NULL) {
-            g_app.port->led_set(APP_LED_FAULT, false);
-        }
+        request_yellow_warning_flash();
         LOGW("[Eye] Removed during treatment; warning flash requested");
         AppController_Stop(APP_STOP_EYE_REMOVED);
     }
@@ -449,9 +486,12 @@ void AppController_SetPower(bool charging, bool full, uint16_t soc, uint16_t mil
         g_app.low_voltage_samples = 0U;
     }
     send_float(SCREEN_SOC, (float)soc);
-    if (g_app.port != NULL && g_app.port->screen_u32 != NULL) {
+    if (eye_is_screen_online(g_app.status.eye) &&
+        g_app.port != NULL && g_app.port->screen_u32 != NULL) {
         /* New screens treat this as a renewable fault status. Old screens do
-         * not know 0x2F01 and safely ignore it. A zero value clears the popup. */
+         * not know 0x2F01 and safely ignore it. A zero value clears the popup.
+         * Do not transmit this frame while the eye shield is offline; its
+         * 0x2055 offline state and a fault status must remain mutually exclusive. */
         g_app.port->screen_u32(SCREEN_FAULT_STATUS, (uint32_t)g_app.status.fault);
     }
     set_led();
@@ -560,9 +600,7 @@ static void tick_homing(void)
     if (result == APP_ASYNC_FAILED) {
         LOGE("[Motor] Homing failed");
         g_app.status.fault = APP_FAULT_MOTOR_HOME;
-        if (g_app.port->fault_report != NULL) {
-            g_app.port->fault_report(APP_FAULT_MOTOR_HOME);
-        }
+        report_fault_if_eye_online(APP_FAULT_MOTOR_HOME);
         if (g_app.port->screen_float != NULL) {
             g_app.port->screen_float(SCREEN_HOME_COMPLETE, 0.0f);
         }
@@ -621,9 +659,22 @@ static void tick_heat(uint32_t now)
     if (g_app.port == NULL || g_app.port->heater_control == NULL ||
         !g_app.port->heater_control(control_target, &measured)) {
         g_app.status.temperature_valid = false;
-        AppController_RaiseFault(APP_FAULT_TMP112_COMM);
+        if (!eye_is_screen_online(g_app.status.eye)) {
+            g_app.temp_comm_failure_timing = false;
+            return;
+        }
+        if (!g_app.temp_comm_failure_timing) {
+            g_app.temp_comm_failure_timing = true;
+            g_app.temp_comm_failure_started_ms = now;
+            LOGW("[Temp] Read failed; waiting for eye-removal confirmation");
+        } else if (now - g_app.temp_comm_failure_started_ms >=
+                   APP_TEMP_COMM_FAULT_CONFIRM_MS) {
+            g_app.temp_comm_failure_timing = false;
+            AppController_RaiseFault(APP_FAULT_TMP112_COMM);
+        }
         return;
     }
+    g_app.temp_comm_failure_timing = false;
     g_app.status.measured_temperature_c = measured;
     g_app.status.temperature_valid = true;
     if (measured >= APP_MAX_SAFE_TEMPERATURE_C) {
@@ -717,6 +768,11 @@ void AppController_Tick(void)
         return;
     }
     tick_heat(now);
+    if (g_app.temp_comm_failure_timing) {
+        /* HeaterControl has already made the treatment outputs safe. Avoid
+         * restarting pressure while eye removal is being confirmed. */
+        return;
+    }
     tick_pressure(now);
 }
 

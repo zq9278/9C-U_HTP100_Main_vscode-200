@@ -14,6 +14,7 @@ void AppLog_Write(const char *level, const char *format, ...)
 static uint32_t fake_now;
 static AppAsyncResult fake_home_result;
 static AppEyeState fake_eye;
+static bool fake_heat_ok;
 static unsigned home_begin_count;
 static unsigned home_poll_count;
 static unsigned home_cancel_count;
@@ -24,6 +25,10 @@ static unsigned pressure_start_count;
 static unsigned eye_screen_count;
 static unsigned new_eye_screen_count;
 static unsigned temperature_screen_count;
+static unsigned fault_status_count;
+static unsigned immediate_fault_count;
+static uint32_t last_fault_status_value;
+static uint16_t last_screen_command;
 static float last_eye_screen_value;
 static float last_heat_target;
 static float last_temperature_screen_value;
@@ -35,7 +40,7 @@ static bool heat(float target, float *measured)
 {
     last_heat_target = target;
     *measured = target;
-    return true;
+    return fake_heat_ok;
 }
 static bool pressure_start(float target) { (void)target; pressure_start_count++; return true; }
 static bool pressure_step(float target, float *measured) { *measured = target; return true; }
@@ -60,6 +65,7 @@ static void screen_float(uint16_t command, float value)
     if (command == 0x2055U) {
         eye_screen_count++;
         last_eye_screen_value = value;
+        last_screen_command = command;
     } else if (command == 0x2057U) {
         new_eye_screen_count++;
     } else if (command == 0x2037U || command == 0x2041U) {
@@ -68,8 +74,15 @@ static void screen_float(uint16_t command, float value)
     }
 }
 static void screen_u16(uint16_t command, uint16_t value) { (void)command; (void)value; }
-static void screen_u32(uint16_t command, uint32_t value) { (void)command; (void)value; }
-static void fault(AppFault value) { (void)value; }
+static void screen_u32(uint16_t command, uint32_t value)
+{
+    if (command == 0x2F01U) {
+        fault_status_count++;
+        last_fault_status_value = value;
+        last_screen_command = command;
+    }
+}
+static void fault(AppFault value) { (void)value; immediate_fault_count++; }
 
 static const AppPort port = {
     now_ms, outputs_off, heat, pressure_start, pressure_step, pressure_stop,
@@ -83,11 +96,16 @@ static void reset_fixture(void)
     fake_now = 0U;
     fake_home_result = APP_ASYNC_BUSY;
     fake_eye = APP_EYE_NEW;
+    fake_heat_ok = true;
     home_begin_count = home_poll_count = home_cancel_count = eye_consume_count = 0U;
     treatment_count = power_off_count = pressure_start_count = 0U;
     eye_screen_count = 0U;
     new_eye_screen_count = 0U;
     temperature_screen_count = 0U;
+    fault_status_count = 0U;
+    immediate_fault_count = 0U;
+    last_fault_status_value = UINT32_MAX;
+    last_screen_command = 0U;
     last_eye_screen_value = -1.0f;
     last_heat_target = -1.0f;
     last_temperature_screen_value = -1.0f;
@@ -158,6 +176,63 @@ static void test_eye_offline_state_is_repeated_to_screen(void)
     AppController_SetEyeState(APP_EYE_ABSENT);
     assert(eye_screen_count == before + 2U);
     assert(last_eye_screen_value == 0.0f);
+}
+
+static void test_eye_offline_clears_and_suppresses_nonzero_fault_frames(void)
+{
+    reset_fixture();
+    AppController_RaiseFault(APP_FAULT_TMP112_COMM);
+    assert(immediate_fault_count == 1U);
+
+    fault_status_count = 0U;
+    last_screen_command = 0U;
+    AppController_SetEyeState(APP_EYE_ABSENT);
+    assert(fault_status_count == 1U);
+    assert(last_fault_status_value == 0U);
+    /* The clear frame must precede the eye-offline frame. */
+    assert(last_screen_command == 0x2055U);
+
+    AppController_RaiseFault(APP_FAULT_TMP112_COMM);
+    AppController_SetPower(false, false, 50U, 3800U);
+    assert(immediate_fault_count == 1U);
+    assert(fault_status_count == 1U);
+
+    AppController_SetEyeState(APP_EYE_SERVICE);
+    AppController_SetPower(false, false, 50U, 3800U);
+    assert(fault_status_count == 2U);
+    assert(last_fault_status_value == APP_FAULT_TMP112_COMM);
+}
+
+static void test_temperature_failure_then_eye_removal_does_not_raise_0101(void)
+{
+    reset_fixture();
+    assert(AppController_Prepare(APP_MODE_HEAT, 0.0f));
+    fake_heat_ok = false;
+    fake_now = APP_HEAT_CONTROL_PERIOD_MS;
+    AppController_Tick();
+    assert(AppController_Status()->fault == APP_FAULT_NONE);
+    assert(immediate_fault_count == 0U);
+
+    AppController_SetEyeState(APP_EYE_ABSENT);
+    fake_now += APP_TEMP_COMM_FAULT_CONFIRM_MS;
+    AppController_Tick();
+    assert(AppController_Status()->fault == APP_FAULT_NONE);
+    assert(immediate_fault_count == 0U);
+    assert(AppController_Status()->stop_reason == APP_STOP_EYE_REMOVED);
+}
+
+static void test_temperature_failure_raises_0101_only_while_eye_online(void)
+{
+    reset_fixture();
+    assert(AppController_Prepare(APP_MODE_HEAT, 0.0f));
+    fake_heat_ok = false;
+    fake_now = APP_HEAT_CONTROL_PERIOD_MS;
+    AppController_Tick();
+    fake_now += APP_TEMP_COMM_FAULT_CONFIRM_MS;
+    AppController_Tick();
+    assert(AppController_Status()->eye == APP_EYE_NEW);
+    assert(AppController_Status()->fault == APP_FAULT_TMP112_COMM);
+    assert(immediate_fault_count == 1U);
 }
 
 static void test_only_natural_finish_counts(void)
@@ -300,6 +375,9 @@ int main(void)
     test_eye_is_consumed_only_at_formal_start();
     test_reinserted_consumed_eye_is_rejected();
     test_eye_offline_state_is_repeated_to_screen();
+    test_eye_offline_clears_and_suppresses_nonzero_fault_frames();
+    test_temperature_failure_then_eye_removal_does_not_raise_0101();
+    test_temperature_failure_raises_0101_only_while_eye_online();
     test_only_natural_finish_counts();
     test_temperature_compensation_controls_and_offsets_lcd();
     test_charging_blocks_and_interrupts_treatment();

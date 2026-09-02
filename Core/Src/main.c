@@ -29,6 +29,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "app_log.h"
+#include "screen_uart.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -93,6 +94,10 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_DMA_Init();
+  MX_USART2_UART_Init();
+  /* Arm the screen RX DMA at the earliest safe point. Incoming 0x1050 frames
+   * are retained while the scheduler and the rest of the board start. */
+  (void)ScreenUart_Init();
   MX_I2C1_Init();
   MX_I2C2_Init();
   MX_SPI1_Init();
@@ -100,7 +105,6 @@ int main(void)
   MX_TIM16_Init();
   MX_TIM17_Init();
   MX_SPI2_Init();
-  MX_USART2_UART_Init();
   MX_TIM7_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */

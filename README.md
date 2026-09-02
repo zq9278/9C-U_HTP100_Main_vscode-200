@@ -40,6 +40,29 @@ Outputs are created in `build/Debug`:
 
 The current Debug build uses about 70 KB flash and 20 KB RAM.
 
+## Flash with ST-Link
+
+Connect the ST-Link to the board's `SWDIO`, `SWCLK`, `GND`, and target voltage
+reference (`3V3`). Connect `NRST` as well if the target may enter a state that
+prevents a normal SWD connection.
+
+Install STM32CubeProgrammer/STM32CubeCLT and make sure
+`STM32_Programmer_CLI.exe` is available on `PATH`. In VS Code, select:
+
+1. `Terminal` -> `Run Task...`;
+2. `ST-Link: build and flash Debug`.
+
+The task builds the Debug firmware, writes the generated HEX file through SWD,
+verifies the flash contents, and resets the MCU. The equivalent command is:
+
+```powershell
+STM32_Programmer_CLI -c port=SWD -w build/Debug/9C-HTP100-main-v2.hex -v -rst
+```
+
+For source-level debugging and automatic download, use the existing
+`STM32 v2 Debug (ST-Link, direct)` launch configuration from the VS Code
+Run and Debug panel.
+
 ## Hardware validation gate
 
 This source compiles, but it must not be used for treatment before bench testing:

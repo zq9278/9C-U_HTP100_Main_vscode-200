@@ -8,6 +8,7 @@
 typedef bool (*ScreenWriteFn)(const uint8_t *data, uint16_t length);
 
 void ScreenProtocol_Init(ScreenWriteFn write_fn);
+bool ScreenProtocol_EarlyBootReply(const uint8_t *data, size_t length);
 void ScreenProtocol_Feed(const uint8_t *data, size_t length);
 void ScreenProtocol_SendFloat(uint16_t command, float value);
 void ScreenProtocol_SendU16(uint16_t command, uint16_t value);

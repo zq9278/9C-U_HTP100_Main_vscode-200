@@ -12,6 +12,7 @@ static uint8_t g_dma[SCREEN_RX_DMA_SIZE];
 static uint8_t g_ring[SCREEN_RING_SIZE];
 static volatile uint16_t g_write;
 static volatile uint16_t g_read;
+static bool g_initialized;
 
 static void screen_uart_start_receive(void)
 {
@@ -21,12 +22,16 @@ static void screen_uart_start_receive(void)
 
 bool ScreenUart_Init(void)
 {
+    if (g_initialized) {
+        return true;
+    }
     g_write = 0U;
     g_read = 0U;
     if (HAL_UARTEx_ReceiveToIdle_DMA(&huart2, g_dma, sizeof(g_dma)) != HAL_OK) {
         return false;
     }
     __HAL_DMA_DISABLE_IT(huart2.hdmarx, DMA_IT_HT);
+    g_initialized = true;
     return true;
 }
 

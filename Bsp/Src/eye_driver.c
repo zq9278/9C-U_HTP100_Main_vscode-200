@@ -104,26 +104,6 @@ static HAL_StatusTypeDef i2c2_mem_write(uint16_t device, uint16_t address,
     return status;
 }
 
-static HAL_StatusTypeDef i2c2_device_ready(uint16_t device)
-{
-    HAL_StatusTypeDef status = HAL_ERROR;
-
-    for (uint8_t attempt = 0U; attempt < 2U; ++attempt) {
-        status = HAL_I2C_IsDeviceReady(&hi2c2, device, 1U, 20U);
-        if (status == HAL_OK) {
-            return HAL_OK;
-        }
-        if (i2c2_needs_recovery(status, HAL_I2C_GetError(&hi2c2)) &&
-            !i2c2_recover(status, HAL_I2C_GetError(&hi2c2))) {
-            return status;
-        }
-        if (attempt == 0U) {
-            vTaskDelay(pdMS_TO_TICKS(2U));
-        }
-    }
-    return status;
-}
-
 static void eye_restart_debounce(void)
 {
     /* Keep the last confirmed state. A single temperature/EEPROM transaction
@@ -151,8 +131,10 @@ static bool eye_read_raw_state(AppEyeState *state)
 #endif
     uint16_t service;
 
-    if (state == NULL || i2c2_device_ready(TMP112_ADDRESS) != HAL_OK ||
-        !eye_read_u16(EYE_SERVICE_ADDRESS, &service)
+    /* Eye presence is determined by its EEPROM. This keeps a physically
+     * inserted eye online when only TMP112 communication has failed, allowing
+     * the application to distinguish a real 0x0101 from physical removal. */
+    if (state == NULL || !eye_read_u16(EYE_SERVICE_ADDRESS, &service)
 #if PRODUCT_EYE_FUSE_ENABLED
         || !eye_read_u16(EYE_MARK_ADDRESS, &marker)
 #endif
@@ -177,16 +159,13 @@ void EyeDriver_Init(void)
     eye_restart_debounce();
 }
 
-static bool eye_read_temperature(float *temperature_c, bool restart_debounce)
+static bool eye_read_temperature(float *temperature_c)
 {
     uint8_t data[2];
     int16_t raw;
 
     if (temperature_c == NULL ||
         i2c2_mem_read(TMP112_ADDRESS, 0x00U, data, sizeof(data), 50U) != HAL_OK) {
-        if (restart_debounce) {
-            eye_restart_debounce();
-        }
         return false;
     }
     raw = (int16_t)(((uint16_t)data[0] << 8U) | data[1]);
@@ -197,14 +176,14 @@ static bool eye_read_temperature(float *temperature_c, bool restart_debounce)
 
 bool EyeDriver_ReadTemperature(float *temperature_c)
 {
-    return eye_read_temperature(temperature_c, true);
+    /* Do not cancel an in-progress physical-removal debounce. The application
+     * defers 0x0101 long enough for the eye poller to confirm removal. */
+    return eye_read_temperature(temperature_c);
 }
 
 bool EyeDriver_ReadTemperatureTelemetry(float *temperature_c)
 {
-    /* Telemetry is observational: a failed optional sample must not disturb
-     * the eye insertion/removal debounce state. */
-    return eye_read_temperature(temperature_c, false);
+    return eye_read_temperature(temperature_c);
 }
 
 AppEyeState EyeDriver_ReadState(void)
@@ -213,8 +192,8 @@ AppEyeState EyeDriver_ReadState(void)
     uint8_t required_samples;
     bool read_valid = eye_read_raw_state(&sample);
 
-    /* At power-up a not-yet-ready TMP112/EEPROM is electrically identical to
-     * a removed eye shield. Do not expose that transient as a real state.
+    /* At power-up a not-yet-ready eye EEPROM is electrically identical to a
+     * removed eye shield. Do not expose that transient as a real state.
      * A valid inserted device still uses the normal five-sample debounce;
      * absence needs a longer run of failed probes only for this first result. */
     if (!g_initial_state_confirmed && !read_valid) {

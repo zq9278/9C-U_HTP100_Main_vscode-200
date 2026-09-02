@@ -37,14 +37,25 @@ static bool board_eye_mark_consumed(void)
     return true;
 }
 
-static bool board_pressure_zero_calibrate(void)
+static AppFault board_pressure_zero_calibrate(void)
 {
+    Ads1220Result result;
+
     if (!Ads1220Driver_Ready() && !Ads1220Driver_Init()) {
         LOGE("[ADS1220] Zero calibration skipped: ADC initialization unavailable");
-        return false;
+        return APP_FAULT_PRESSURE_COMM;
     }
     g_ads_ready = true;
-    return Ads1220Driver_ZeroCalibrate();
+    result = Ads1220Driver_ZeroCalibrate();
+    if (result == ADS1220_RESULT_OK) {
+        return APP_FAULT_NONE;
+    }
+    if (result == ADS1220_RESULT_SENSOR_SHORT ||
+        result == ADS1220_RESULT_SENSOR_OPEN) {
+        return APP_FAULT_PRESSURE_SENSOR;
+    }
+    return result == ADS1220_RESULT_ZERO_UNSTABLE ?
+           APP_FAULT_PRESSURE_ZERO : APP_FAULT_PRESSURE_COMM;
 }
 
 static bool board_power_read(bool *charging, bool *full, uint16_t *soc,

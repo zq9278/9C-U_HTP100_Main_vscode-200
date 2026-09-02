@@ -12,7 +12,7 @@ bool TreatmentHw_SetHeatPid(float kp, float ki, float kd);
 void TreatmentHw_GetHeatPid(float *kp, float *ki, float *kd);
 void TreatmentHw_HeatTelemetry(float *power_percent, float *integral_output);
 bool TreatmentHw_PressureStart(float target_mmhg);
-bool TreatmentHw_PressureStep(float target_mmhg, float *measured_mmhg);
+AppFault TreatmentHw_PressureStep(float target_mmhg, float *measured_mmhg);
 void TreatmentHw_PressureStop(void);
 bool TreatmentHw_PressureTelemetry(int32_t *raw, float *pressure_mmhg,
                                    uint8_t *stage, bool *active,

@@ -588,6 +588,7 @@ void AppController_StorageEraseEye(void)
 static void tick_homing(void)
 {
     AppAsyncResult result;
+    AppFault zero_fault;
 
     if (!g_app.home_started || g_app.port == NULL || g_app.port->home_poll == NULL) {
         return;
@@ -597,10 +598,12 @@ static void tick_homing(void)
         return;
     }
     g_app.home_started = false;
-    if (result == APP_ASYNC_FAILED) {
-        LOGE("[Motor] Homing failed");
-        g_app.status.fault = APP_FAULT_MOTOR_HOME;
-        report_fault_if_eye_online(APP_FAULT_MOTOR_HOME);
+    if (result == APP_ASYNC_FAILED || result == APP_ASYNC_COMM_FAILED) {
+        AppFault fault = result == APP_ASYNC_COMM_FAILED ?
+                         APP_FAULT_MOTOR_COMM : APP_FAULT_MOTOR_HOME;
+        LOGE("[Motor] Homing failed fault=0x%04X", (unsigned)fault);
+        g_app.status.fault = fault;
+        report_fault_if_eye_online(fault);
         if (g_app.port->screen_float != NULL) {
             g_app.port->screen_float(SCREEN_HOME_COMPLETE, 0.0f);
         }
@@ -613,8 +616,13 @@ static void tick_homing(void)
     }
 
     g_app.status.home_valid = true;
-    g_app.status.pressure_zero_valid = g_app.port->pressure_zero_calibrate != NULL &&
-                                       g_app.port->pressure_zero_calibrate();
+    zero_fault = g_app.port->pressure_zero_calibrate != NULL ?
+                 g_app.port->pressure_zero_calibrate() : APP_FAULT_PRESSURE_COMM;
+    g_app.status.pressure_zero_valid = zero_fault == APP_FAULT_NONE;
+    if (zero_fault != APP_FAULT_NONE) {
+        g_app.status.fault = zero_fault;
+        report_fault_if_eye_online(zero_fault);
+    }
     LOGI("[Motor] Homing complete, pressure_zero=%u",
          g_app.status.pressure_zero_valid ? 1U : 0U);
     if (g_app.port->screen_float != NULL) {
@@ -733,15 +741,21 @@ static void tick_heat(uint32_t now)
 static void tick_pressure(uint32_t now)
 {
     float measured = 0.0f;
+    AppFault fault;
 
     if (!mode_uses_pressure(g_app.status.mode) || g_app.status.state != APP_STATE_RUNNING ||
         now - g_app.last_pressure_ms < APP_PRESSURE_CONTROL_PERIOD_MS) {
         return;
     }
     g_app.last_pressure_ms = now;
-    if (g_app.port == NULL || g_app.port->pressure_control_step == NULL ||
-        !g_app.port->pressure_control_step(g_app.status.settings.pressure_mmhg, &measured)) {
+    if (g_app.port == NULL || g_app.port->pressure_control_step == NULL) {
         AppController_RaiseFault(APP_FAULT_PRESSURE_COMM);
+        return;
+    }
+    fault = g_app.port->pressure_control_step(g_app.status.settings.pressure_mmhg,
+                                              &measured);
+    if (fault != APP_FAULT_NONE) {
+        AppController_RaiseFault(fault);
         return;
     }
     if (measured >= APP_MAX_SAFE_PRESSURE_MMHG) {

@@ -15,6 +15,8 @@ static uint32_t fake_now;
 static AppAsyncResult fake_home_result;
 static AppEyeState fake_eye;
 static bool fake_heat_ok;
+static AppFault fake_pressure_fault;
+static AppFault fake_zero_fault;
 static unsigned home_begin_count;
 static unsigned home_poll_count;
 static unsigned home_cancel_count;
@@ -43,12 +45,13 @@ static bool heat(float target, float *measured)
     return fake_heat_ok;
 }
 static bool pressure_start(float target) { (void)target; pressure_start_count++; return true; }
-static bool pressure_step(float target, float *measured) { *measured = target; return true; }
+static AppFault pressure_step(float target, float *measured)
+{ *measured = target; return fake_pressure_fault; }
 static void pressure_stop(void) { }
 static bool home_begin(void) { home_begin_count++; return true; }
 static AppAsyncResult home_poll(void) { home_poll_count++; return fake_home_result; }
 static void home_cancel(void) { home_cancel_count++; }
-static bool zero_calibrate(void) { return true; }
+static AppFault zero_calibrate(void) { return fake_zero_fault; }
 static AppEyeState eye_read(void) { return fake_eye; }
 static bool eye_consume(void) { eye_consume_count++; return true; }
 static bool power_read(bool *charging, bool *full, uint16_t *soc, uint16_t *mv)
@@ -97,6 +100,8 @@ static void reset_fixture(void)
     fake_home_result = APP_ASYNC_BUSY;
     fake_eye = APP_EYE_NEW;
     fake_heat_ok = true;
+    fake_pressure_fault = APP_FAULT_NONE;
+    fake_zero_fault = APP_FAULT_NONE;
     home_begin_count = home_poll_count = home_cancel_count = eye_consume_count = 0U;
     treatment_count = power_off_count = pressure_start_count = 0U;
     eye_screen_count = 0U;
@@ -321,6 +326,38 @@ static void test_fault_and_power_loss_always_home(void)
     assert(AppController_Status()->stop_reason == APP_STOP_POWER_LOSS);
 }
 
+static void test_pressure_control_preserves_hardware_fault_type(void)
+{
+    reset_fixture();
+    assert(AppController_Prepare(APP_MODE_PRESSURE, 350.0f));
+    assert(AppController_Start());
+    fake_pressure_fault = APP_FAULT_MOTOR_COMM;
+    fake_now = APP_PRESSURE_CONTROL_PERIOD_MS;
+    AppController_Tick();
+    assert(AppController_Status()->fault == APP_FAULT_MOTOR_COMM);
+
+    reset_fixture();
+    assert(AppController_Prepare(APP_MODE_PRESSURE, 350.0f));
+    assert(AppController_Start());
+    fake_pressure_fault = APP_FAULT_PRESSURE_SENSOR;
+    fake_now = APP_PRESSURE_CONTROL_PERIOD_MS;
+    AppController_Tick();
+    assert(AppController_Status()->fault == APP_FAULT_PRESSURE_SENSOR);
+}
+
+static void test_pressure_zero_reports_sensor_fault(void)
+{
+    reset_fixture();
+    assert(AppController_Prepare(APP_MODE_PRESSURE, 350.0f));
+    assert(AppController_Start());
+    AppController_Stop(APP_STOP_USER);
+    fake_zero_fault = APP_FAULT_PRESSURE_SENSOR;
+    fake_home_result = APP_ASYNC_OK;
+    AppController_Tick();
+    assert(AppController_Status()->fault == APP_FAULT_PRESSURE_SENSOR);
+    assert(!AppController_Status()->pressure_zero_valid);
+}
+
 static void test_external_power_prevents_batfet_shutdown(void)
 {
     reset_fixture();
@@ -384,6 +421,8 @@ int main(void)
     test_charge_done_uses_full_led();
     test_low_voltage_homes_then_cuts_power();
     test_fault_and_power_loss_always_home();
+    test_pressure_control_preserves_hardware_fault_type();
+    test_pressure_zero_reports_sensor_fault();
     test_external_power_prevents_batfet_shutdown();
     test_normal_stop_can_quick_resume_with_previous_zero();
     test_fault_stop_cannot_quick_resume();

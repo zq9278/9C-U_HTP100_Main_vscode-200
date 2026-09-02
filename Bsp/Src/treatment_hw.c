@@ -28,6 +28,8 @@ typedef enum {
 #define PRESSURE_STEP_DEFAULT_DT_S     0.02f
 #define PRESSURE_STEP_MIN_DT_S         0.005f
 #define PRESSURE_STEP_MAX_DT_S         0.10f
+#define TMC_RUNTIME_PROBE_PERIOD_MS     100U
+#define TMC_HOME_COMM_FAILURE_LIMIT     3U
 
 #define HEAT_PID_DEFAULT_KP 30.0f
 #define HEAT_PID_DEFAULT_KI 5.0f
@@ -53,10 +55,13 @@ static int32_t g_ads_last_pressure_x10;
 static int32_t g_ads_last_unfiltered_pressure_x10;
 static bool g_ads_sample_valid;
 static bool g_ads_overpressure_pending;
+static uint8_t g_overpressure_samples;
 static PressureStage g_pressure_stage;
 static uint32_t g_pressure_stage_ms;
 static uint32_t g_pressure_last_step_ms;
 static uint32_t g_pressure_hold_started_ms;
+static uint32_t g_pressure_last_tmc_probe_ms;
+static uint32_t g_pressure_last_sensor_check_ms;
 static float g_pressure_integral;
 static float g_pressure_command;
 static float g_pressure_error;
@@ -106,6 +111,7 @@ static void pressure_filter_reset(void)
     g_pressure_filter_index = 0U;
     g_pressure_filtered = 0.0f;
     g_pressure_filter_valid = false;
+    g_overpressure_samples = 0U;
 }
 
 static float pressure_filter_update(float sample)
@@ -366,8 +372,24 @@ AppAsyncResult TreatmentHw_HomePoll(void)
                  (unsigned long)g_home_spi_errors);
             g_home_last_log_ms = now;
         }
+        if (g_home_spi_errors >= TMC_HOME_COMM_FAILURE_LIMIT) {
+            Tmc5130Driver_Enable(false);
+            g_home_active = false;
+            return APP_ASYNC_COMM_FAILED;
+        }
         return APP_ASYNC_BUSY;
     }
+    if (!Tmc5130Driver_Probe()) {
+        g_home_spi_errors++;
+        if (g_home_spi_errors >= TMC_HOME_COMM_FAILURE_LIMIT) {
+            Tmc5130Driver_Enable(false);
+            g_home_active = false;
+            LOGE("[Motor] TMC5130 disconnected during home");
+            return APP_ASYNC_COMM_FAILED;
+        }
+        return APP_ASYNC_BUSY;
+    }
+    g_home_spi_errors = 0U;
     if (now - g_home_last_log_ms >= 500U) {
         LOGI("[Motor] Home polling elapsed=%lu ms RAMP_STAT=0x%08lX",
              (unsigned long)(now - g_home_started_ms),
@@ -411,6 +433,8 @@ bool TreatmentHw_PressureStart(float target_mmhg)
     g_pressure_stage = PRESS_STAGE_FAST;
     g_pressure_stage_ms = HAL_GetTick();
     g_pressure_last_step_ms = g_pressure_stage_ms;
+    g_pressure_last_tmc_probe_ms = g_pressure_stage_ms;
+    g_pressure_last_sensor_check_ms = g_pressure_stage_ms;
     g_pressure_command = 0.0f;
     pressure_control_reset();
     pressure_filter_reset();
@@ -421,9 +445,10 @@ bool TreatmentHw_PressureStart(float target_mmhg)
     return true;
 }
 
-bool TreatmentHw_PressureStep(float target_mmhg, float *measured_mmhg)
+AppFault TreatmentHw_PressureStep(float target_mmhg, float *measured_mmhg)
 {
     const PressureTuningProfile *profile = PressureTuning_ProfileForTarget(target_mmhg);
+    Ads1220Result sensor_result;
     int32_t raw;
     uint32_t now = HAL_GetTick();
     uint32_t elapsed_ms = now - g_pressure_last_step_ms;
@@ -436,10 +461,33 @@ bool TreatmentHw_PressureStep(float target_mmhg, float *measured_mmhg)
     float command;
     uint32_t retract_time_ms;
 
-    if (!g_pressure_active || measured_mmhg == NULL ||
-        !Ads1220Driver_ReadRaw(&raw)) {
+    if (!g_pressure_active || measured_mmhg == NULL) {
         (void)pressure_set_speed(0.0f);
-        return false;
+        return APP_FAULT_PRESSURE_COMM;
+    }
+    if (now - g_pressure_last_tmc_probe_ms >= TMC_RUNTIME_PROBE_PERIOD_MS) {
+        g_pressure_last_tmc_probe_ms = now;
+        if (!Tmc5130Driver_Probe()) {
+            Tmc5130Driver_Enable(false);
+            g_pressure_active = false;
+            LOGE("[Motor] TMC5130 disconnected during pressure control");
+            return APP_FAULT_MOTOR_COMM;
+        }
+    }
+    if (now - g_pressure_last_sensor_check_ms >= APP_PRESSURE_SENSOR_CHECK_MS) {
+        g_pressure_last_sensor_check_ms = now;
+        sensor_result = Ads1220Driver_CheckSensor();
+        if (sensor_result != ADS1220_RESULT_OK) {
+            (void)pressure_set_speed(0.0f);
+            g_pressure_active = false;
+            return sensor_result == ADS1220_RESULT_SENSOR_SHORT ||
+                   sensor_result == ADS1220_RESULT_SENSOR_OPEN ?
+                   APP_FAULT_PRESSURE_SENSOR : APP_FAULT_PRESSURE_COMM;
+        }
+    }
+    if (!Ads1220Driver_ReadRaw(&raw)) {
+        (void)pressure_set_speed(0.0f);
+        return APP_FAULT_PRESSURE_COMM;
     }
     dt_s = elapsed_ms == 0U ? PRESSURE_STEP_DEFAULT_DT_S :
            (float)elapsed_ms / 1000.0f;
@@ -448,20 +496,34 @@ bool TreatmentHw_PressureStep(float target_mmhg, float *measured_mmhg)
     g_pressure_last_step_ms = now;
 
     unfiltered_pressure = Ads1220Driver_PressureFromRaw(raw, target_mmhg);
-    *measured_mmhg = pressure_filter_update(unfiltered_pressure);
     g_ads_last_raw = raw;
-    g_ads_last_pressure_x10 = (int32_t)(*measured_mmhg * 10.0f);
     g_ads_last_unfiltered_pressure_x10 =
         (int32_t)(unfiltered_pressure * 10.0f);
     g_ads_sample_valid = true;
     if (unfiltered_pressure >= APP_MAX_SAFE_PRESSURE_MMHG) {
-        g_ads_overpressure_pending = true;
-        (void)pressure_set_speed(0.0f);
-        /* Return the unfiltered value so the application safety check trips
-         * in this same cycle; filtering is never allowed to delay a fault. */
-        *measured_mmhg = unfiltered_pressure;
-        return true;
+        if (g_overpressure_samples < APP_OVER_PRESSURE_CONFIRM_SAMPLES) {
+            g_overpressure_samples++;
+        }
+        LOGW("[Pressure] Over-limit sample %u/%u pressure=%ldmmHg",
+             (unsigned)g_overpressure_samples,
+             (unsigned)APP_OVER_PRESSURE_CONFIRM_SAMPLES,
+             (long)unfiltered_pressure);
+        if (g_overpressure_samples >= APP_OVER_PRESSURE_CONFIRM_SAMPLES) {
+            g_ads_overpressure_pending = true;
+            return APP_FAULT_OVER_PRESSURE;
+        }
+        /* Do not feed an unconfirmed spike into the display/control filter or
+         * the application's backup threshold check. */
+        *measured_mmhg = g_pressure_filter_valid ? g_pressure_filtered :
+                         APP_MAX_SAFE_PRESSURE_MMHG - 0.1f;
+        g_ads_last_pressure_x10 = (int32_t)(*measured_mmhg * 10.0f);
+        return APP_FAULT_NONE;
     }
+    if (g_overpressure_samples != 0U) {
+        g_overpressure_samples = 0U;
+    }
+    *measured_mmhg = pressure_filter_update(unfiltered_pressure);
+    g_ads_last_pressure_x10 = (int32_t)(*measured_mmhg * 10.0f);
     if (now - g_ads_last_log_ms >= APP_SENSOR_LOG_PERIOD_MS) {
         int32_t pressure_x10 = (int32_t)(*measured_mmhg * 10.0f);
         LOGI("[ADS1220] raw=%ld zero=%ld pressure=%ld.%01ldmmHg target=%ld stage=%u speed=%ld",
@@ -485,9 +547,9 @@ bool TreatmentHw_PressureStep(float target_mmhg, float *measured_mmhg)
             g_pressure_stage_ms = now;
             LOGI("[Pressure] fast->slow pressure=%ld threshold=%ld",
                  (long)*measured_mmhg, (long)speed_switch);
-            if (!pressure_set_speed(profile->approach_speed)) return false;
+            if (!pressure_set_speed(profile->approach_speed)) return APP_FAULT_MOTOR_COMM;
         } else if (!pressure_set_speed(profile->fast_speed)) {
-            return false;
+            return APP_FAULT_MOTOR_COMM;
         }
         break;
     case PRESS_STAGE_SLOW:
@@ -508,9 +570,9 @@ bool TreatmentHw_PressureStep(float target_mmhg, float *measured_mmhg)
                  (long)*measured_mmhg,
                  (long)hold_switch,
                  g_pressure_hold_timer_started ? "started" : "waiting-target");
-            if (!pressure_set_speed(command)) return false;
+            if (!pressure_set_speed(command)) return APP_FAULT_MOTOR_COMM;
         } else if (!pressure_set_speed(profile->approach_speed)) {
-            return false;
+            return APP_FAULT_MOTOR_COMM;
         }
         break;
     case PRESS_STAGE_HOLD:
@@ -526,7 +588,7 @@ bool TreatmentHw_PressureStep(float target_mmhg, float *measured_mmhg)
         }
         if (g_pressure_hold_timer_started &&
             now - g_pressure_hold_started_ms >= PRESSURE_HOLD_TIME_MS) {
-            if (!pressure_set_speed(0.0f)) return false;
+            if (!pressure_set_speed(0.0f)) return APP_FAULT_MOTOR_COMM;
             g_pressure_stage = PRESS_STAGE_RETRACT;
             g_pressure_stage_ms = now;
             pressure_control_reset();
@@ -536,12 +598,12 @@ bool TreatmentHw_PressureStep(float target_mmhg, float *measured_mmhg)
         } else {
             command = pressure_control_command(profile, error, dt_s,
                                                g_pressure_hold_timer_started);
-            if (!pressure_set_speed(command)) return false;
+            if (!pressure_set_speed(command)) return APP_FAULT_MOTOR_COMM;
         }
         break;
     case PRESS_STAGE_RETRACT:
         if (stage_elapsed_ms >= retract_time_ms) {
-            if (!pressure_set_speed(0.0f)) return false;
+            if (!pressure_set_speed(0.0f)) return APP_FAULT_MOTOR_COMM;
             g_pressure_stage = PRESS_STAGE_FAST;
             g_pressure_stage_ms = now;
             pressure_control_reset();
@@ -550,13 +612,13 @@ bool TreatmentHw_PressureStep(float target_mmhg, float *measured_mmhg)
                  (unsigned long)stage_elapsed_ms,
                  (unsigned long)retract_time_ms);
         } else {
-            if (!pressure_set_speed(-profile->retract_speed)) return false;
+            if (!pressure_set_speed(-profile->retract_speed)) return APP_FAULT_MOTOR_COMM;
         }
         break;
     default:
-        return false;
+        return APP_FAULT_PRESSURE_COMM;
     }
-    return true;
+    return APP_FAULT_NONE;
 }
 
 bool TreatmentHw_PressureTelemetry(int32_t *raw, float *pressure_mmhg,

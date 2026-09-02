@@ -16,6 +16,7 @@
 #define WORK_FRAME_SIZE    13U
 #define PREP_FRAME_SIZE    11U
 #define RX_STREAM_SIZE     256U
+#define TREATMENT_ACK_ID   0x00AEU
 
 static ScreenWriteFn g_write;
 static uint8_t g_rx_stream[RX_STREAM_SIZE];
@@ -84,6 +85,11 @@ static uint16_t frame_command(const uint8_t *frame)
     return (uint16_t)((uint16_t)frame[3] << 8U) | frame[4];
 }
 
+static void send_treatment_ack(uint16_t command)
+{
+    ScreenProtocol_SendU16(TREATMENT_ACK_ID, command);
+}
+
 static void handle_work_frame(const uint8_t *frame)
 {
     uint16_t command = frame_command(frame);
@@ -95,25 +101,31 @@ static void handle_work_frame(const uint8_t *frame)
     switch (command) {
     case 0x8900U:
         AppController_Stop(APP_STOP_NATURAL);
+        send_treatment_ack(command);
         break;
     case 0x1041U:
         (void)AppController_Prepare(APP_MODE_HEAT, 0.0f);
+        send_treatment_ack(command);
         break;
     case 0x1005U:
         (void)AppController_Prepare(APP_MODE_PRESSURE, value);
+        send_treatment_ack(command);
         break;
     case 0x1037U:
         (void)AppController_Prepare(APP_MODE_AUTO, value);
+        send_treatment_ack(command);
         break;
     case 0x1040U:
     case 0x1006U:
     case 0x1036U:
         (void)AppController_Start();
+        send_treatment_ack(command);
         break;
     case 0x1030U:
     case 0x1034U:
     case 0x1038U:
         AppController_Stop(APP_STOP_USER);
+        send_treatment_ack(command);
         break;
     case 0x1050U:
         /* Language is deliberately the first response. The screen caches it

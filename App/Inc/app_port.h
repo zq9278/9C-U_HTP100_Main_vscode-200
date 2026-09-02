@@ -6,7 +6,8 @@
 typedef enum {
     APP_ASYNC_BUSY = 0,
     APP_ASYNC_OK,
-    APP_ASYNC_FAILED
+    APP_ASYNC_FAILED,
+    APP_ASYNC_COMM_FAILED
 } AppAsyncResult;
 
 typedef enum {
@@ -23,12 +24,12 @@ typedef struct {
     void (*safe_outputs_off)(void);
     bool (*heater_control)(float target_c, float *measured_c);
     bool (*pressure_control_start)(float target_mmhg);
-    bool (*pressure_control_step)(float target_mmhg, float *measured_mmhg);
+    AppFault (*pressure_control_step)(float target_mmhg, float *measured_mmhg);
     void (*pressure_control_stop)(void);
     bool (*home_begin)(void);
     AppAsyncResult (*home_poll)(void);
     void (*home_cancel)(void);
-    bool (*pressure_zero_calibrate)(void);
+    AppFault (*pressure_zero_calibrate)(void);
     AppEyeState (*eye_read_state)(void);
     bool (*eye_mark_consumed)(void);
     bool (*power_read)(bool *charging, bool *full, uint16_t *soc, uint16_t *millivolts);

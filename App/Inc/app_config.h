@@ -3,6 +3,7 @@
 
 #define APP_PREHEAT_TARGET_C              40.0f
 #define APP_DEFAULT_TREATMENT_TEMP_C      42.5f
+#define APP_MAX_DISPLAY_TEMPERATURE_C     42.9f
 #define APP_MAX_SAFE_TEMPERATURE_C        44.0f
 #define APP_OVER_TEMPERATURE_CONFIRM_MS   5000U
 #define APP_MAX_SAFE_PRESSURE_MMHG        650.0f
@@ -32,7 +33,7 @@
 #define APP_SCREEN_TIMEOUT_MS             2000U
 #define APP_HOME_TIMEOUT_MS               8000U
 
-/* Set to 1U to send fault code frames (0x2070) to the LCD. */
-#define APP_ENABLE_SCREEN_FAULT_REPORT    0U
+/* Set to 1U to send new-screen fault status frames (0x2F01) to the LCD. */
+#define APP_ENABLE_SCREEN_FAULT_REPORT    1U
 
 #endif

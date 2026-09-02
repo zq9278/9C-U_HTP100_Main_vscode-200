@@ -41,15 +41,14 @@ static void send_preset(uint16_t preset, bool edit_response)
         temperature = AppController_StorageRead(base, 42U);
         pressure = AppController_StorageRead((uint8_t)(base + 2U),
                                              preset == 1U ? 250U : preset == 2U ? 350U : 450U);
-        runtime = AppController_StorageRead((uint8_t)(base + 4U),
-                                            preset == 1U ? 2U : preset == 2U ? 3U : 4U);
+        runtime = AppController_StorageRead((uint8_t)(base + 4U), 2U);
     }
     if (edit_response) {
         ScreenProtocol_SendU16(0x00A9U, pressure);
         ScreenProtocol_SendU16(0x00A8U, temperature);
     } else {
-        ScreenProtocol_SendU16(0x00A4U, temperature);
-        ScreenProtocol_SendU16(0x00A5U, pressure);
+        ScreenProtocol_SendU16(0x00A4U, pressure);
+        ScreenProtocol_SendU16(0x00A5U, temperature);
     }
     ScreenProtocol_SendU16(edit_response ? 0x00AAU : 0x00A6U, runtime);
 }
@@ -119,8 +118,7 @@ static void handle_work_frame(const uint8_t *frame)
         ScreenProtocol_SendU16(0x00ADU, 1U);
         AppController_ScreenBoot();
         ScreenProtocol_SendU32(0x2060U, PRODUCT_VERSION_NUMBER);
-        ScreenProtocol_SendU16(0x00ABU, AppController_StorageRead(0x06U, 0U));
-        send_preset(AppController_StorageRead(0xFCU, 0U), false);
+        ScreenProtocol_SendU16(0x00ABU, AppController_StorageRead(0x06U, 1U));
         break;
     case 0x1051U:
     case 0x1052U:
@@ -185,7 +183,7 @@ static void handle_prepare_frame(const uint8_t *frame)
         if (value <= 1U) {
             (void)AppController_StorageWrite(0x06U, value);
         }
-        ScreenProtocol_SendU16(0x00ABU, AppController_StorageRead(0x06U, 0U));
+        ScreenProtocol_SendU16(0x00ABU, AppController_StorageRead(0x06U, 1U));
         break;
     default:
         /* Preset persistence is handled by the storage service, not the

@@ -18,6 +18,7 @@
 #define SCREEN_TIMER_STOP            0x2056U
 #define SCREEN_NEW_EYE               0x2057U
 #define SCREEN_HOME_COMPLETE         0x20F0U
+#define SCREEN_FAULT_STATUS          0x2F01U
 
 typedef struct {
     AppSnapshot status;
@@ -448,6 +449,11 @@ void AppController_SetPower(bool charging, bool full, uint16_t soc, uint16_t mil
         g_app.low_voltage_samples = 0U;
     }
     send_float(SCREEN_SOC, (float)soc);
+    if (g_app.port != NULL && g_app.port->screen_u32 != NULL) {
+        /* New screens treat this as a renewable fault status. Old screens do
+         * not know 0x2F01 and safely ignore it. A zero value clears the popup. */
+        g_app.port->screen_u32(SCREEN_FAULT_STATUS, (uint32_t)g_app.status.fault);
+    }
     set_led();
 }
 
@@ -601,6 +607,7 @@ static void tick_heat(uint32_t now)
     float measured = 0.0f;
     float target;
     float control_target;
+    float screen_temperature;
 
     if (!mode_uses_heat(g_app.status.mode) ||
         (g_app.status.state != APP_STATE_PREHEAT && g_app.status.state != APP_STATE_RUNNING) ||
@@ -650,9 +657,13 @@ static void tick_heat(uint32_t now)
                                        (measured - g_app.display_temperature_c);
     }
     if (now - g_app.last_temp_display_ms >= APP_TEMP_DISPLAY_PERIOD_MS) {
+        screen_temperature = g_app.display_temperature_c -
+                             PRODUCT_TEMPERATURE_CONTROL_COMPENSATION_C;
+        if (screen_temperature > APP_MAX_DISPLAY_TEMPERATURE_C) {
+            screen_temperature = APP_MAX_DISPLAY_TEMPERATURE_C;
+        }
         send_float(g_app.status.mode == APP_MODE_AUTO ? SCREEN_TEMP_AUTO : SCREEN_TEMP_HEAT,
-                   g_app.display_temperature_c -
-                   PRODUCT_TEMPERATURE_CONTROL_COMPENSATION_C);
+                   screen_temperature);
         g_app.last_temp_display_ms = now;
     }
     if (now - g_app.last_temp_log_ms >= APP_SENSOR_LOG_PERIOD_MS) {

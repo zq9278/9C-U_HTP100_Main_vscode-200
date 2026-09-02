@@ -23,6 +23,13 @@
 ## Countdown compatibility
 
 - The screen continues to own the countdown.
+- A blank main-board EEPROM is initialized once using a committed marker at
+  `0xFE`: sound is enabled, preset 1/2/3 use 250/350/450 mmHg respectively,
+  all three use a 2-minute runtime, and preset 1 is selected. The marker is written last.
+  Later boots preserve the preset selection and values written by the screen.
+- `PRODUCT_MAIN_EEPROM_FILL_FF_ON_BOOT=1U` is a test-only option that fills the
+  complete main-board EEPROM with `0xFF` on every boot before new-machine defaults
+  are written. Production firmware must set it to `0U`.
 - Runtime from prepare command `0x1041` is stored and displayed but is not used by
   the main board to generate a second countdown.
 - Screen command `0x8900` is the authoritative natural-finish event.

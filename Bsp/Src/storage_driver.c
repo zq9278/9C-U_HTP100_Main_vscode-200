@@ -3,12 +3,20 @@
 #include <string.h>
 
 #include "FreeRTOS.h"
+#include "app_log.h"
 #include "main.h"
+#include "product_config.h"
 #include "screen_protocol.h"
 #include "task.h"
 #include "tim.h"
 
+#define STORAGE_SELECTED_PRESET_ADDRESS  0xFCU
+#define STORAGE_INIT_FLAG_ADDRESS        0xFEU
+#define STORAGE_INIT_FLAG_VALUE          0x4854U
+
 static uint16_t g_counters[3];
+
+static void storage_initialize_screen_presets(void);
 
 static void ee_delay_us(uint16_t microseconds)
 {
@@ -116,6 +124,11 @@ void StorageDriver_PreparePins(void)
 void StorageDriver_Init(void)
 {
     StorageDriver_PreparePins();
+#if PRODUCT_MAIN_EEPROM_FILL_FF_ON_BOOT
+    StorageDriver_EraseMain();
+    LOGW("[Storage] TEST: main EEPROM filled with 0xFF on boot");
+#endif
+    storage_initialize_screen_presets();
     g_counters[0] = StorageDriver_ReadU16(0x00U, 0U);
     g_counters[1] = StorageDriver_ReadU16(0x02U, 0U);
     g_counters[2] = StorageDriver_ReadU16(0x04U, 0U);
@@ -138,6 +151,62 @@ bool StorageDriver_WriteU16(uint8_t address, uint16_t value)
 {
     return ee_write_byte(address, (uint8_t)(value >> 8U)) &&
            ee_write_byte((uint8_t)(address + 1U), (uint8_t)value);
+}
+
+static bool storage_write_u16_verified(uint8_t address, uint16_t value)
+{
+    return StorageDriver_WriteU16(address, value) &&
+           StorageDriver_ReadU16(address, (uint16_t)~value) == value;
+}
+
+static void storage_initialize_screen_presets(void)
+{
+    static const struct {
+        uint8_t address;
+        uint16_t value;
+    } defaults[] = {
+        {0x06U, 1U},
+        {0x08U, 42U}, {0x0AU, 250U}, {0x0CU, 2U},
+        {0x10U, 42U}, {0x12U, 350U}, {0x14U, 2U},
+        {0x18U, 42U}, {0x1AU, 450U}, {0x1CU, 2U},
+        {STORAGE_SELECTED_PRESET_ADDRESS, 1U}
+    };
+    uint16_t flag = StorageDriver_ReadU16(STORAGE_INIT_FLAG_ADDRESS, 0xFFFFU);
+    uint16_t selected;
+
+    if (flag == STORAGE_INIT_FLAG_VALUE) {
+        return;
+    }
+
+    selected = StorageDriver_ReadU16(STORAGE_SELECTED_PRESET_ADDRESS, 0xFFFFU);
+    if (selected != 0xFFFFU) {
+        /* Upgrade path: an older firmware already has screen-owned settings.
+         * Preserve them and only add the new initialization marker. */
+        if (storage_write_u16_verified(STORAGE_INIT_FLAG_ADDRESS,
+                                       STORAGE_INIT_FLAG_VALUE)) {
+            LOGI("[Storage] Existing screen presets preserved; init flag added");
+        } else {
+            LOGE("[Storage] Failed to add screen preset init flag");
+        }
+        return;
+    }
+
+    for (size_t index = 0U; index < sizeof(defaults) / sizeof(defaults[0]); ++index) {
+        if (!storage_write_u16_verified(defaults[index].address,
+                                         defaults[index].value)) {
+            LOGE("[Storage] New-machine preset initialization failed at 0x%02X",
+                 (unsigned)defaults[index].address);
+            return;
+        }
+    }
+    /* Commit the marker last. A power loss before this write causes the full
+     * initialization to be retried on the next boot. */
+    if (storage_write_u16_verified(STORAGE_INIT_FLAG_ADDRESS,
+                                   STORAGE_INIT_FLAG_VALUE)) {
+        LOGI("[Storage] New machine initialized: sound=on preset=1 pressures=250/350/450 runtime=2min");
+    } else {
+        LOGE("[Storage] New-machine preset init flag write failed");
+    }
 }
 
 bool StorageDriver_ReadBytes(uint8_t address, uint8_t *data, size_t length)
@@ -193,7 +262,7 @@ void StorageDriver_IncrementEyeReplacement(void)
 
 void StorageDriver_ScreenBootSync(void)
 {
-    uint16_t selected = StorageDriver_ReadU16(0xFCU, 1U);
+    uint16_t selected = StorageDriver_ReadU16(STORAGE_SELECTED_PRESET_ADDRESS, 1U);
     uint8_t base;
     uint16_t temperature;
     uint16_t pressure;
@@ -207,9 +276,7 @@ void StorageDriver_ScreenBootSync(void)
     pressure = StorageDriver_ReadU16((uint8_t)(base + 2U),
                                      selected == 1U ? 250U :
                                      selected == 2U ? 350U : 450U);
-    runtime = StorageDriver_ReadU16((uint8_t)(base + 4U),
-                                    selected == 1U ? 2U :
-                                    selected == 2U ? 3U : 4U);
+    runtime = StorageDriver_ReadU16((uint8_t)(base + 4U), 2U);
 
     ScreenProtocol_SendU16(0x00A0U, g_counters[0]);
     ScreenProtocol_SendU16(0x00A1U, g_counters[1]);

@@ -68,7 +68,7 @@ static void board_power_latch_off(void)
 static void board_fault_report(AppFault fault)
 {
 #if APP_ENABLE_SCREEN_FAULT_REPORT
-    ScreenProtocol_SendU32(0x2070U, (uint32_t)fault);
+    ScreenProtocol_SendU32(0x2F01U, (uint32_t)fault);
     LOGE("[Screen TX] Fault code=0x%08lX", (unsigned long)fault);
 #else
     (void)fault;

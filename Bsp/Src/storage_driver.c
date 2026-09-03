@@ -13,10 +13,55 @@
 #define STORAGE_SELECTED_PRESET_ADDRESS  0xFCU
 #define STORAGE_INIT_FLAG_ADDRESS        0xFEU
 #define STORAGE_INIT_FLAG_VALUE          0x4854U
+#define STORAGE_PROGRAM_MARKER_ADDRESS   0x0801F800UL
+#define STORAGE_PROGRAM_PENDING_MAGIC    UINT64_C(0x4949434652455348)
+#define STORAGE_PROGRAM_HANDLED_MAGIC    UINT64_C(0x49494346444F4E45)
 
 static uint16_t g_counters[3];
 
-static void storage_initialize_screen_presets(void);
+/* This value is restored whenever the ELF/HEX is downloaded. The linker keeps
+ * it in the last, otherwise unused, MCU Flash page. Runtime code reads the
+ * address through volatile so the compiler cannot fold the value to a constant. */
+__attribute__((used, section(".program_marker"), aligned(8)))
+const uint64_t g_storage_program_marker_image = STORAGE_PROGRAM_PENDING_MAGIC;
+
+static bool storage_erase_main(void);
+static bool storage_initialize_screen_presets(void);
+
+static bool storage_program_reset_pending(void)
+{
+    const volatile uint64_t *marker =
+        (const volatile uint64_t *)STORAGE_PROGRAM_MARKER_ADDRESS;
+
+    return *marker != STORAGE_PROGRAM_HANDLED_MAGIC;
+}
+
+static bool storage_mark_program_reset_handled(void)
+{
+    FLASH_EraseInitTypeDef erase = {
+        .TypeErase = FLASH_TYPEERASE_PAGES,
+        .Banks = FLASH_BANK_1,
+        .Page = (STORAGE_PROGRAM_MARKER_ADDRESS - FLASH_BASE) / FLASH_PAGE_SIZE,
+        .NbPages = 1U
+    };
+    uint32_t page_error = 0U;
+    HAL_StatusTypeDef status;
+
+    status = HAL_FLASH_Unlock();
+    if (status == HAL_OK) {
+        status = HAL_FLASHEx_Erase(&erase, &page_error);
+    }
+    if (status == HAL_OK) {
+        status = HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD,
+                                   STORAGE_PROGRAM_MARKER_ADDRESS,
+                                   STORAGE_PROGRAM_HANDLED_MAGIC);
+    }
+    (void)HAL_FLASH_Lock();
+
+    return status == HAL_OK &&
+           *(const volatile uint64_t *)STORAGE_PROGRAM_MARKER_ADDRESS ==
+               STORAGE_PROGRAM_HANDLED_MAGIC;
+}
 
 static void ee_delay_us(uint16_t microseconds)
 {
@@ -123,12 +168,36 @@ void StorageDriver_PreparePins(void)
 
 void StorageDriver_Init(void)
 {
+    bool reset_pending = false;
+    bool reset_ok = true;
+    bool presets_ok;
+
     StorageDriver_PreparePins();
-#if PRODUCT_MAIN_EEPROM_FILL_FF_ON_BOOT
-    StorageDriver_EraseMain();
-    LOGW("[Storage] TEST: main EEPROM filled with 0xFF on boot");
+#if PRODUCT_MAIN_EEPROM_RESET_AFTER_PROGRAM
+    reset_pending = storage_program_reset_pending();
+    if (reset_pending) {
+        reset_ok = storage_erase_main();
+        if (reset_ok) {
+            LOGW("[Storage] Firmware download detected: main I2C EEPROM reset");
+        } else {
+            LOGE("[Storage] Main I2C EEPROM reset failed; retrying next boot");
+        }
+    }
 #endif
-    storage_initialize_screen_presets();
+    presets_ok = storage_initialize_screen_presets();
+#if PRODUCT_MAIN_EEPROM_RESET_AFTER_PROGRAM
+    if (reset_pending && reset_ok && presets_ok) {
+        if (storage_mark_program_reset_handled()) {
+            LOGI("[Storage] Post-download I2C EEPROM reset completed");
+        } else {
+            LOGE("[Storage] Failed to commit download marker; reset will retry next boot");
+        }
+    }
+#else
+    (void)reset_pending;
+    (void)reset_ok;
+#endif
+    (void)presets_ok;
     g_counters[0] = StorageDriver_ReadU16(0x00U, 0U);
     g_counters[1] = StorageDriver_ReadU16(0x02U, 0U);
     g_counters[2] = StorageDriver_ReadU16(0x04U, 0U);
@@ -159,7 +228,7 @@ static bool storage_write_u16_verified(uint8_t address, uint16_t value)
            StorageDriver_ReadU16(address, (uint16_t)~value) == value;
 }
 
-static void storage_initialize_screen_presets(void)
+static bool storage_initialize_screen_presets(void)
 {
     static const struct {
         uint8_t address;
@@ -175,7 +244,7 @@ static void storage_initialize_screen_presets(void)
     uint16_t selected;
 
     if (flag == STORAGE_INIT_FLAG_VALUE) {
-        return;
+        return true;
     }
 
     selected = StorageDriver_ReadU16(STORAGE_SELECTED_PRESET_ADDRESS, 0xFFFFU);
@@ -185,10 +254,11 @@ static void storage_initialize_screen_presets(void)
         if (storage_write_u16_verified(STORAGE_INIT_FLAG_ADDRESS,
                                        STORAGE_INIT_FLAG_VALUE)) {
             LOGI("[Storage] Existing screen presets preserved; init flag added");
+            return true;
         } else {
             LOGE("[Storage] Failed to add screen preset init flag");
+            return false;
         }
-        return;
     }
 
     for (size_t index = 0U; index < sizeof(defaults) / sizeof(defaults[0]); ++index) {
@@ -196,7 +266,7 @@ static void storage_initialize_screen_presets(void)
                                          defaults[index].value)) {
             LOGE("[Storage] New-machine preset initialization failed at 0x%02X",
                  (unsigned)defaults[index].address);
-            return;
+            return false;
         }
     }
     /* Commit the marker last. A power loss before this write causes the full
@@ -204,8 +274,10 @@ static void storage_initialize_screen_presets(void)
     if (storage_write_u16_verified(STORAGE_INIT_FLAG_ADDRESS,
                                    STORAGE_INIT_FLAG_VALUE)) {
         LOGI("[Storage] New machine initialized: sound=on preset=1 pressures=250/350/450 runtime=2min");
+        return true;
     } else {
         LOGE("[Storage] New-machine preset init flag write failed");
+        return false;
     }
 }
 
@@ -235,12 +307,22 @@ bool StorageDriver_WriteBytes(uint8_t address, const uint8_t *data, size_t lengt
     return true;
 }
 
-void StorageDriver_EraseMain(void)
+static bool storage_erase_main(void)
 {
+    bool success = true;
+
     for (uint16_t address = 0U; address < 256U; ++address) {
-        (void)ee_write_byte((uint8_t)address, 0xFFU);
+        if (!ee_write_byte((uint8_t)address, 0xFFU)) {
+            success = false;
+        }
     }
     memset(g_counters, 0, sizeof(g_counters));
+    return success;
+}
+
+void StorageDriver_EraseMain(void)
+{
+    (void)storage_erase_main();
 }
 
 void StorageDriver_IncrementCounter(AppMode mode)

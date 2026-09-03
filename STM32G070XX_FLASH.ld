@@ -62,7 +62,8 @@ _Min_Stack_Size = 0x400; /* required amount of stack */
 MEMORY
 {
 RAM (xrw)      : ORIGIN = 0x20000000, LENGTH = 36K
-FLASH (rx)      : ORIGIN = 0x8000000, LENGTH = 128K
+FLASH (rx)      : ORIGIN = 0x08000000, LENGTH = 126K
+PROGRAM_MARKER (rx) : ORIGIN = 0x0801F800, LENGTH = 2K
 }
 
 /* Define output sections */
@@ -146,6 +147,18 @@ SECTIONS
     PROVIDE_HIDDEN (__fini_array_end = .);
     . = ALIGN(4);
   } >FLASH
+
+  /* Dedicated final Flash page. The downloader restores the pending marker;
+     firmware replaces it with the handled marker after resetting I2C EEPROM. */
+  .program_marker (READONLY) :
+  {
+    . = ALIGN(8);
+    KEEP(*(.program_marker))
+    . = ALIGN(8);
+  } >PROGRAM_MARKER
+
+  ASSERT(SIZEOF(.program_marker) <= LENGTH(PROGRAM_MARKER),
+         "program marker exceeds reserved Flash page")
 
   /* used by the startup to initialize data */
   _sidata = LOADADDR(.data);

@@ -24,7 +24,7 @@
 /* 1U: consume/fuse an eye shield at the first formal treatment actuation.
  * 0U: do not write or enforce the eye-shield consumed marker. */
 #ifndef PRODUCT_EYE_FUSE_ENABLED
-#define PRODUCT_EYE_FUSE_ENABLED    1U
+#define PRODUCT_EYE_FUSE_ENABLED    0U
 #endif
 
 #if PRODUCT_EYE_FUSE_ENABLED != 0U && PRODUCT_EYE_FUSE_ENABLED != 1U

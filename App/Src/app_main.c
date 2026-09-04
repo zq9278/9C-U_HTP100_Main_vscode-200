@@ -86,6 +86,7 @@ void AppMain_Task(void *argument)
             last_eye_ms = now;
             AppEyeState eye = Board_AppPort()->eye_read_state();
             if (EyeDriver_InitialStateConfirmed()) {
+                AppController_SetEyeLinkHealthy(EyeDriver_LastProbeValid());
                 AppController_SetEyeState(eye);
             }
         }

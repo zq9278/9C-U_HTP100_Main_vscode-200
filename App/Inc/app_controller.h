@@ -11,6 +11,7 @@ bool AppController_Start(void);
 void AppController_Stop(AppStopReason reason);
 void AppController_RaiseFault(AppFault fault);
 void AppController_SetEyeState(AppEyeState eye);
+void AppController_SetEyeLinkHealthy(bool healthy);
 void AppController_SetPower(bool charging, bool full, uint16_t soc, uint16_t millivolts);
 void AppController_NotifyPowerLoss(void);
 void AppController_SetTemperature(float temperature_c);

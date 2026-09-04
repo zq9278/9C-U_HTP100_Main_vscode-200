@@ -23,15 +23,20 @@
 ## Countdown compatibility
 
 - The screen continues to own the countdown.
-- A blank main-board EEPROM is initialized once using a committed marker at
-  `0xFE`: sound is enabled, preset 1/2/3 use 250/350/450 mmHg respectively,
-  all three use a 2-minute runtime, and preset 1 is selected. The marker is written last.
+- A blank main-board EEPROM is initialized once with Chinese at `0x06`, sound
+  enabled at `0xF8`, preset 1/2/3 pressures of 250/350/450 mmHg, a 2-minute
+  runtime for all presets, and preset 1 selected. The commit marker at `0xFE`
+  is written last.
   Later boots preserve the preset selection and values written by the screen.
 - `PRODUCT_MAIN_EEPROM_RESET_AFTER_PROGRAM=1U` fills the complete main-board I2C
   EEPROM with `0xFF` once after each firmware download, then writes new-machine defaults.
   Ordinary power cycles preserve the EEPROM. The eye-shield EEPROM is not affected.
 - Runtime from prepare command `0x1041` is stored and displayed but is not used by
   the main board to generate a second countdown.
+- A confirmed in-use eye shield has a 1-second I2C reconnect window. During a
+  transient loss the treatment outputs are paused, the LCD continues to see the
+  eye as online, and the consumed marker does not invalidate the current insertion
+  session. Continuous loss beyond the window is reported as eye offline.
 - Screen command `0x8900` is the authoritative natural-finish event.
 - A following legacy mode-stop command is accepted harmlessly while homing.
 

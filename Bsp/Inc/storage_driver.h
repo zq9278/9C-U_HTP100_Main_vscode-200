@@ -9,6 +9,7 @@
 
 void StorageDriver_PreparePins(void);
 void StorageDriver_Init(void);
+uint16_t StorageDriver_BootLanguage(void);
 uint16_t StorageDriver_ReadU16(uint8_t address, uint16_t default_value);
 bool StorageDriver_WriteU16(uint8_t address, uint16_t value);
 bool StorageDriver_ReadBytes(uint8_t address, uint8_t *data, size_t length);

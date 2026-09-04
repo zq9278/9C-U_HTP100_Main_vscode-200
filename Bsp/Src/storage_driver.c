@@ -13,6 +13,8 @@
 #define STORAGE_SELECTED_PRESET_ADDRESS  0xFCU
 #define STORAGE_INIT_FLAG_ADDRESS        0xFEU
 #define STORAGE_INIT_FLAG_VALUE          0x4854U
+#define STORAGE_LANGUAGE_ADDRESS         0x06U
+#define STORAGE_SOUND_ADDRESS            0xF8U
 #define STORAGE_PROGRAM_MARKER_ADDRESS   0x0801F800UL
 #define STORAGE_PROGRAM_PENDING_MAGIC    UINT64_C(0x4949434652455348)
 #define STORAGE_PROGRAM_HANDLED_MAGIC    UINT64_C(0x49494346444F4E45)
@@ -203,6 +205,19 @@ void StorageDriver_Init(void)
     g_counters[2] = StorageDriver_ReadU16(0x04U, 0U);
 }
 
+uint16_t StorageDriver_BootLanguage(void)
+{
+#if PRODUCT_MAIN_EEPROM_RESET_AFTER_PROGRAM
+    /* StorageDriver_Init() clears the I2C EEPROM later in the same first boot.
+     * Return the new-machine language now so the LCD never briefly applies an
+     * old persisted language before that reset happens. */
+    if (storage_program_reset_pending()) {
+        return 0U;
+    }
+#endif
+    return StorageDriver_ReadU16(STORAGE_LANGUAGE_ADDRESS, 0U);
+}
+
 uint16_t StorageDriver_ReadU16(uint8_t address, uint16_t default_value)
 {
     uint8_t high;
@@ -234,10 +249,11 @@ static bool storage_initialize_screen_presets(void)
         uint8_t address;
         uint16_t value;
     } defaults[] = {
-        {0x06U, 1U},
+        {STORAGE_LANGUAGE_ADDRESS, 0U},
         {0x08U, 42U}, {0x0AU, 250U}, {0x0CU, 2U},
         {0x10U, 42U}, {0x12U, 350U}, {0x14U, 2U},
         {0x18U, 42U}, {0x1AU, 450U}, {0x1CU, 2U},
+        {STORAGE_SOUND_ADDRESS, 1U},
         {STORAGE_SELECTED_PRESET_ADDRESS, 1U}
     };
     uint16_t flag = StorageDriver_ReadU16(STORAGE_INIT_FLAG_ADDRESS, 0xFFFFU);
@@ -330,9 +346,17 @@ void StorageDriver_IncrementCounter(AppMode mode)
     if (mode >= APP_MODE_HEAT && mode <= APP_MODE_AUTO) {
         uint8_t index = (uint8_t)mode - 1U;
         uint8_t address = (uint8_t)(index * 2U);
+        uint16_t next_count = (uint16_t)(g_counters[index] + 1U);
 
-        g_counters[index]++;
-        (void)StorageDriver_WriteU16(address, g_counters[index]);
+        if (!storage_write_u16_verified(address, next_count)) {
+            LOGE("[Storage] Treatment counter write failed mode=%u value=%u",
+                 (unsigned)mode, (unsigned)next_count);
+            return;
+        }
+        g_counters[index] = next_count;
+        ScreenProtocol_SendU16((uint16_t)(0x00A0U + index), next_count);
+        LOGI("[Storage] Treatment counter updated mode=%u value=%u",
+             (unsigned)mode, (unsigned)next_count);
     }
 }
 
@@ -350,15 +374,21 @@ void StorageDriver_ScreenBootSync(void)
     uint16_t pressure;
     uint16_t runtime;
 
-    if (selected < 1U || selected > 3U) {
+    if (selected > 3U) {
         selected = 1U;
     }
-    base = selected == 1U ? 0x08U : selected == 2U ? 0x10U : 0x18U;
-    temperature = StorageDriver_ReadU16(base, 42U);
-    pressure = StorageDriver_ReadU16((uint8_t)(base + 2U),
-                                     selected == 1U ? 250U :
-                                     selected == 2U ? 350U : 450U);
-    runtime = StorageDriver_ReadU16((uint8_t)(base + 4U), 2U);
+    if (selected == 0U) {
+        temperature = 42U;
+        pressure = 150U;
+        runtime = 1U;
+    } else {
+        base = selected == 1U ? 0x08U : selected == 2U ? 0x10U : 0x18U;
+        temperature = StorageDriver_ReadU16(base, 42U);
+        pressure = StorageDriver_ReadU16((uint8_t)(base + 2U),
+                                         selected == 1U ? 250U :
+                                         selected == 2U ? 350U : 450U);
+        runtime = StorageDriver_ReadU16((uint8_t)(base + 4U), 2U);
+    }
 
     ScreenProtocol_SendU16(0x00A0U, g_counters[0]);
     ScreenProtocol_SendU16(0x00A1U, g_counters[1]);
@@ -368,5 +398,6 @@ void StorageDriver_ScreenBootSync(void)
     ScreenProtocol_SendU16(0x00A4U, temperature);
     ScreenProtocol_SendU16(0x00A5U, pressure);
     ScreenProtocol_SendU16(0x00A6U, runtime);
-    ScreenProtocol_SendU16(0x00A7U, StorageDriver_ReadU16(0xF8U, 1U));
+    ScreenProtocol_SendU16(0x00A7U,
+                           StorageDriver_ReadU16(STORAGE_SOUND_ADDRESS, 1U));
 }

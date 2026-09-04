@@ -20,8 +20,10 @@ static uint32_t g_recovery_count;
 static AppEyeState g_stable_state = APP_EYE_ABSENT;
 static AppEyeState g_candidate_state = APP_EYE_ABSENT;
 static uint8_t g_candidate_samples;
+static uint32_t g_candidate_started_ms;
 static uint8_t g_startup_absent_samples;
 static bool g_initial_state_confirmed;
+static bool g_last_probe_valid;
 
 static bool i2c2_needs_recovery(HAL_StatusTypeDef status, uint32_t error)
 {
@@ -110,6 +112,7 @@ static void eye_restart_debounce(void)
      * failure must not masquerade as a physical removal. */
     g_candidate_state = g_stable_state;
     g_candidate_samples = 0U;
+    g_candidate_started_ms = 0U;
 }
 
 static bool eye_read_u16(uint8_t address, uint16_t *value)
@@ -156,6 +159,7 @@ void EyeDriver_Init(void)
     g_stable_state = APP_EYE_ABSENT;
     g_startup_absent_samples = 0U;
     g_initial_state_confirmed = false;
+    g_last_probe_valid = false;
     eye_restart_debounce();
 }
 
@@ -189,8 +193,10 @@ bool EyeDriver_ReadTemperatureTelemetry(float *temperature_c)
 AppEyeState EyeDriver_ReadState(void)
 {
     AppEyeState sample = APP_EYE_ABSENT;
-    uint8_t required_samples;
     bool read_valid = eye_read_raw_state(&sample);
+    bool state_confirmed = false;
+
+    g_last_probe_valid = read_valid;
 
     /* At power-up a not-yet-ready eye EEPROM is electrically identical to a
      * removed eye shield. Do not expose that transient as a real state.
@@ -216,22 +222,31 @@ AppEyeState EyeDriver_ReadState(void)
     if (sample == g_stable_state) {
         g_candidate_state = sample;
         g_candidate_samples = 0U;
+        g_candidate_started_ms = 0U;
         g_initial_state_confirmed = true;
         return g_stable_state;
     }
     if (sample != g_candidate_state) {
         g_candidate_state = sample;
         g_candidate_samples = 1U;
+        g_candidate_started_ms = HAL_GetTick();
     } else if (g_candidate_samples < 0xFFU) {
         g_candidate_samples++;
     }
-    required_samples = sample == APP_EYE_ABSENT ? APP_EYE_REMOVE_CONFIRM_SAMPLES :
-                                                  APP_EYE_INSERT_CONFIRM_SAMPLES;
-    if (g_candidate_samples >= required_samples) {
-        LOGI("[Eye I2C] Confirmed state=%u after %u samples",
-             (unsigned)sample, (unsigned)g_candidate_samples);
+    if (sample == APP_EYE_ABSENT) {
+        state_confirmed = HAL_GetTick() - g_candidate_started_ms >=
+                          APP_EYE_RECONNECT_GRACE_MS;
+    } else {
+        state_confirmed = g_candidate_samples >= APP_EYE_INSERT_CONFIRM_SAMPLES;
+    }
+    if (state_confirmed) {
+        LOGI("[Eye I2C] Confirmed state=%u after %lums (%u samples)",
+             (unsigned)sample,
+             (unsigned long)(HAL_GetTick() - g_candidate_started_ms),
+             (unsigned)g_candidate_samples);
         g_stable_state = sample;
         g_candidate_samples = 0U;
+        g_candidate_started_ms = 0U;
         g_initial_state_confirmed = true;
     }
     return g_stable_state;
@@ -240,6 +255,11 @@ AppEyeState EyeDriver_ReadState(void)
 bool EyeDriver_InitialStateConfirmed(void)
 {
     return g_initial_state_confirmed;
+}
+
+bool EyeDriver_LastProbeValid(void)
+{
+    return g_last_probe_valid;
 }
 
 bool EyeDriver_MarkConsumed(void)

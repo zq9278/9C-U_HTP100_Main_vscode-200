@@ -31,6 +31,8 @@ typedef struct {
     float display_temperature_c;
     bool display_temperature_valid;
     bool tmp112_recovery_confirmed;
+    bool eye_link_healthy;
+    bool eye_link_paused_pressure;
     uint32_t temp_comm_failure_started_ms;
     bool temp_comm_failure_timing;
     uint32_t over_temperature_started_ms;
@@ -241,6 +243,7 @@ void AppController_Init(const AppPort *port)
     g_app.status.settings.temperature_c = APP_DEFAULT_TREATMENT_TEMP_C;
     g_app.status.settings.pressure_mmhg = 350.0f;
     g_app.status.settings.runtime_minutes = 1U;
+    g_app.eye_link_healthy = true;
     safe_outputs_off();
     begin_home();
     set_led();
@@ -495,6 +498,41 @@ void AppController_SetPower(bool charging, bool full, uint16_t soc, uint16_t mil
         g_app.port->screen_u32(SCREEN_FAULT_STATUS, (uint32_t)g_app.status.fault);
     }
     set_led();
+}
+
+void AppController_SetEyeLinkHealthy(bool healthy)
+{
+    bool restart_pressure;
+
+    if (healthy == g_app.eye_link_healthy) {
+        return;
+    }
+    g_app.eye_link_healthy = healthy;
+    if (!healthy) {
+        g_app.temp_comm_failure_timing = false;
+        if (treatment_is_open()) {
+            g_app.eye_link_paused_pressure =
+                g_app.status.state == APP_STATE_RUNNING &&
+                mode_uses_pressure(g_app.status.mode);
+            safe_outputs_off();
+            LOGW("[Eye] I2C link interrupted; outputs paused during reconnect window");
+        }
+        return;
+    }
+
+    restart_pressure = g_app.eye_link_paused_pressure &&
+                       g_app.status.state == APP_STATE_RUNNING &&
+                       mode_uses_pressure(g_app.status.mode);
+    g_app.eye_link_paused_pressure = false;
+    g_app.temp_comm_failure_timing = false;
+    if (restart_pressure &&
+        (g_app.port == NULL || g_app.port->pressure_control_start == NULL ||
+         !g_app.port->pressure_control_start(g_app.status.settings.pressure_mmhg))) {
+        LOGE("[Eye] Pressure restart failed after I2C reconnect");
+        AppController_RaiseFault(APP_FAULT_MOTOR_COMM);
+        return;
+    }
+    LOGI("[Eye] I2C link recovered inside reconnect window");
 }
 
 void AppController_NotifyPowerLoss(void)
@@ -777,6 +815,9 @@ void AppController_Tick(void)
     uint32_t now = now_ms();
 
     try_clear_tmp112_fault();
+    if (!g_app.eye_link_healthy && treatment_is_open()) {
+        return;
+    }
     if (g_app.status.state == APP_STATE_HOMING) {
         tick_homing();
         return;

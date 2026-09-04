@@ -243,10 +243,13 @@ class MainWindow(QMainWindow):
         self.aging_run_started = 0.0
         self.aging_max_pressure = 0.0
         self.last_debug_keepalive = 0.0
+        self.debug_mode_enabled = False
         self.stats = self._load_aging_stats()
         self.settings = QSettings("Shengluokai", "HTP100PressureTuningHost")
         self.ui_font_size = int(self.settings.value("font_size", 10))
         self.ui_scale_percent = int(self.settings.value("ui_scale", 100))
+        self.aging_pressure_tolerance_value = float(
+            self.settings.value("aging_pressure_tolerance_mmhg", 25.0))
         self._build_ui()
         self.field_write_timer = QTimer(self)
         self.field_write_timer.setSingleShot(True)
@@ -351,14 +354,10 @@ class MainWindow(QMainWindow):
 
         aging_group = QGroupBox("调试与自动老化（测试专用）")
         aging = QGridLayout(aging_group)
-        self.debug_button = QPushButton("进入调试模式")
-        self.debug_button.setCheckable(True)
-        self.debug_button.clicked.connect(self._toggle_debug_mode)
-        aging.addWidget(self.debug_button, 0, 0)
-        self.aging_button = QPushButton("一键开启自动老化")
+        self.aging_button = QPushButton("进入调试并开始老化")
         self.aging_button.setCheckable(True)
         self.aging_button.clicked.connect(self._toggle_aging)
-        aging.addWidget(self.aging_button, 0, 1)
+        aging.addWidget(self.aging_button, 0, 0, 1, 2)
         self.ding_button = QPushButton("测试钉钉通知")
         self.ding_button.clicked.connect(self._test_dingtalk)
         aging.addWidget(self.ding_button, 0, 2)
@@ -388,6 +387,19 @@ class MainWindow(QMainWindow):
         self.aging_reverse_seconds.setValue(5.0)
         self.aging_reverse_seconds.setSuffix(" 秒")
         aging.addWidget(self.aging_reverse_seconds, 1, 3)
+        aging.addWidget(QLabel("允许欠压"), 1, 4)
+        self.aging_pressure_tolerance = QDoubleSpinBox()
+        self.aging_pressure_tolerance.setRange(0.0, 200.0)
+        self.aging_pressure_tolerance.setDecimals(1)
+        self.aging_pressure_tolerance.setValue(
+            self.aging_pressure_tolerance_value)
+        self.aging_pressure_tolerance.setSuffix(" mmHg")
+        self.aging_pressure_tolerance.setToolTip(
+            "前进时间内最高压力低于‘目标压力－允许欠压’时，本轮判定失败")
+        self.aging_pressure_tolerance.valueChanged.connect(
+            lambda value: self.settings.setValue(
+                "aging_pressure_tolerance_mmhg", value))
+        aging.addWidget(self.aging_pressure_tolerance, 1, 5)
         self.aging_status = QLabel("未运行")
         self.aging_status.setStyleSheet("font-size:15px;font-weight:600;color:#536274")
         aging.addWidget(self.aging_status, 2, 0, 1, 3)
@@ -723,7 +735,7 @@ class MainWindow(QMainWindow):
         if self.serial:
             try:
                 if self.serial.is_open:
-                    if self.aging_state != "idle" or self.debug_button.isChecked():
+                    if self.aging_state != "idle" or self.debug_mode_enabled:
                         self.serial.write(build_screen_work_frame(0x1038, 0.0))
                     self.serial.write(build_frame(CMD_DEBUG_CONTROL, self._next_sequence(), b"\x00"))
                     self.serial.flush()
@@ -777,35 +789,7 @@ class MainWindow(QMainWindow):
             return False
 
     def _set_debug_ui(self, enabled: bool) -> None:
-        self.debug_button.blockSignals(True)
-        self.debug_button.setChecked(enabled)
-        self.debug_button.blockSignals(False)
-        self.debug_button.setText("退出调试模式" if enabled else "进入调试模式")
-        self.debug_button.setStyleSheet(
-            "background:#b46a00;color:white;font-weight:600" if enabled else "")
-
-    def _toggle_debug_mode(self, enabled: bool) -> None:
-        if enabled:
-            if not self.serial or not self.serial.is_open:
-                self._set_debug_ui(False)
-                QMessageBox.warning(self, "未连接", "请先连接主板 USART2。")
-                return
-            answer = QMessageBox.warning(
-                self, "测试专用模式",
-                "调试模式会临时绕过充电治疗联锁，并让充电时屏幕保持供电。\n"
-                "仅限有人看护的老化测试，是否继续？",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if answer != QMessageBox.Yes:
-                self._set_debug_ui(False)
-                return
-            self._queue_ack(CMD_DEBUG_CONTROL, b"\x01", "进入调试模式",
-                            lambda: self._set_debug_ui(True))
-        else:
-            if self.aging_state != "idle":
-                self._stop_aging_ui("退出调试模式，自动老化停止")
-                self._send_screen_command(0x1038, 0.0, "自动治疗停止")
-            self._queue_ack(CMD_DEBUG_CONTROL, b"\x00", "退出调试模式",
-                            lambda: self._set_debug_ui(False))
+        self.debug_mode_enabled = enabled
 
     def _send_debug_keepalive(self) -> None:
         if not self.serial or not self.serial.is_open:
@@ -835,10 +819,9 @@ class MainWindow(QMainWindow):
         if answer != QMessageBox.Yes:
             self._stop_aging_ui("未运行")
             return
-        self.aging_button.setText("停止自动老化")
+        self.aging_button.setText("停止老化并退出调试")
         self.aging_button.setStyleSheet("background:#9b2f35;color:white;font-weight:600")
-        if not self.debug_button.isChecked():
-            self._set_debug_ui(True)
+        if not self.debug_mode_enabled:
             self._queue_ack(CMD_DEBUG_CONTROL, b"\x01", "自动开启调试模式",
                             self._start_aging)
         else:
@@ -889,9 +872,12 @@ class MainWindow(QMainWindow):
             self.aging_button.blockSignals(True)
             self.aging_button.setChecked(False)
             self.aging_button.blockSignals(False)
-            self.aging_button.setText("一键开启自动老化")
+            self.aging_button.setText("进入调试并开始老化")
             self.aging_button.setStyleSheet("")
             self.aging_status.setText(message)
+        if (self.debug_mode_enabled and self.serial and self.serial.is_open):
+            self._queue_ack(CMD_DEBUG_CONTROL, b"\x00", "停止老化并退出调试模式",
+                            lambda: self._set_debug_ui(False))
 
     def _complete_cycle(self, success: bool, reason: str, safe_to_continue: bool = True) -> None:
         self._record_cycle(success, reason)
@@ -928,7 +914,7 @@ class MainWindow(QMainWindow):
 
     def _aging_tick(self) -> None:
         now = time.monotonic()
-        if self.debug_button.isChecked() and now - self.last_debug_keepalive >= 5.0:
+        if self.debug_mode_enabled and now - self.last_debug_keepalive >= 5.0:
             self._send_debug_keepalive()
         if self.aging_state == "idle":
             return
@@ -976,11 +962,12 @@ class MainWindow(QMainWindow):
                 self._aging_fail(f"前进计时内治疗意外中止，状态={state}")
                 return
             if elapsed >= forward_seconds:
-                threshold = self.aging_target.value() - 25.0
+                tolerance = self.aging_pressure_tolerance.value()
+                threshold = max(0.0, self.aging_target.value() - tolerance)
                 if self.aging_max_pressure < threshold:
                     self.pending_cycle_failure = (
                         f"前进{forward_seconds:.1f}秒最高压力{self.aging_max_pressure:.1f}，"
-                        f"未达到{threshold:.1f} mmHg")
+                        f"未达到{threshold:.1f} mmHg（允许欠压{tolerance:.1f} mmHg）")
                 self._send_screen_command(0x1038, 0.0, "自动模式停止")
                 self.aging_state = "wait_home"
                 self.aging_deadline = now + self.aging_reverse_seconds.value()
@@ -1184,7 +1171,7 @@ class MainWindow(QMainWindow):
         self.live_labels["power"].setText(
             f"{'充电' if data['charging'] else '电池'} / "
             f"{'调试模式' if debug_mode else '正常联锁'}")
-        if debug_mode is not None and self.debug_button.isChecked() != bool(debug_mode):
+        if debug_mode is not None and self.debug_mode_enabled != bool(debug_mode):
             was_aging = self.aging_state != "idle"
             self._set_debug_ui(bool(debug_mode))
             if was_aging and not debug_mode:

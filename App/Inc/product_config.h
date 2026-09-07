@@ -3,7 +3,7 @@
 
 /* Product identity. PRODUCT_VERSION_NUMBER is sent to the LCD and tuning host. */
 #define PRODUCT_MODEL_NAME          "9C-HTP100"
-#define PRODUCT_VERSION_NUMBER      20260828UL
+#define PRODUCT_VERSION_NUMBER      20260904UL
 
 /* Add this value to the heater control setpoint and subtract it from the LCD's
  * measured-temperature display. Safety checks and tuning-host telemetry keep

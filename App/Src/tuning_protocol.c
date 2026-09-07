@@ -310,8 +310,13 @@ static void send_home_event(bool success)
 static bool state_allows_storage(void)
 {
     /* A full byte-wise EEPROM write takes about 0.7 s. Keep it out of all
-     * control states so heater, pressure and homing loops cannot be delayed. */
-    return AppController_Status()->state == APP_STATE_IDLE;
+     * active control states so heater, pressure and homing loops cannot be
+     * delayed.  Fault state is also safe: AppController_RaiseFault() turns
+     * every output off before entering it, and service tuning often needs to
+     * save calibration/PID values while a sensor is intentionally unplugged. */
+    AppState state = AppController_Status()->state;
+
+    return state == APP_STATE_IDLE || state == APP_STATE_FAULT;
 }
 
 static bool set_profile_field(uint8_t profile_index, uint8_t field_index,

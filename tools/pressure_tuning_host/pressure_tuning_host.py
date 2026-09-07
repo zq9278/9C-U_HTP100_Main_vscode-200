@@ -30,11 +30,12 @@ from PyQt5.QtWidgets import (
 from protocol import (
     CMD_DEBUG_CONTROL, CMD_DEFAULTS, CMD_GET_ALL, CMD_GET_STATUS,
     CMD_GET_HEAT_PID, CMD_HELLO, CMD_PREPARE, CMD_PREPARE_HEAT, CMD_SAVE,
-    CMD_SET_FIELD, CMD_SET_HEAT_PID, CMD_SET_TEMPERATURE, CMD_START, CMD_STOP,
+    CMD_SET_FIELD, CMD_SET_HEAT_PID, CMD_SET_PROFILE, CMD_SET_TEMPERATURE,
+    CMD_START, CMD_STOP,
     CMD_TELEMETRY_CONTROL, PROFILE_KEYS, RSP_ACK, RSP_HEAT_PID, RSP_HOME_EVENT,
     RSP_INFO, RSP_PROFILE, RSP_TELEMETRY, STATUS_TEXT, FrameParser, build_frame,
     build_screen_work_frame, decode_heat_pid, decode_home_event, decode_profile,
-    decode_telemetry, encode_heat_pid, encode_profile_field,
+    decode_telemetry, encode_heat_pid, encode_profile, encode_profile_field,
 )
 
 
@@ -601,34 +602,15 @@ class MainWindow(QMainWindow):
                     f"第 {row + 1} 挡 PID 切换百分比不能小于快慢切换百分比。")
                 return False
 
-        # Two percentage fields constrain one another. Put each device row in
-        # a safe temporary state before writing the requested pair.
+        # Send one complete profile per pressure range.  The old implementation
+        # sent 12 field updates per row before CMD_SAVE, so one missed ACK could
+        # discard the remaining queue before the EEPROM save command was ever
+        # transmitted.  A complete profile is validated atomically by the MCU
+        # and reduces the save sequence from 60 RAM writes to five.
         for row, values in enumerate(profiles):
             self._queue_ack(
-                CMD_SET_FIELD,
-                encode_profile_field(row, "speed_switch_percent", 5.0),
-                f"整表同步第 {row + 1} 挡临时快慢切换=5%")
-            self._queue_ack(
-                CMD_SET_FIELD,
-                encode_profile_field(row, "hold_switch_percent", 100.0),
-                f"整表同步第 {row + 1} 挡临时PID切换=100%")
-            for field in PROFILE_KEYS:
-                if field in ("speed_switch_percent", "hold_switch_percent"):
-                    continue
-                value = values[field]
-                self._queue_ack(
-                    CMD_SET_FIELD, encode_profile_field(row, field, value),
-                    f"整表同步第 {row + 1} 挡 {field}={value:g}")
-            self._queue_ack(
-                CMD_SET_FIELD,
-                encode_profile_field(
-                    row, "hold_switch_percent", values["hold_switch_percent"]),
-                f"整表同步第 {row + 1} 挡 PID切换={values['hold_switch_percent']:g}%")
-            self._queue_ack(
-                CMD_SET_FIELD,
-                encode_profile_field(
-                    row, "speed_switch_percent", values["speed_switch_percent"]),
-                f"整表同步第 {row + 1} 挡 快慢切换={values['speed_switch_percent']:g}%")
+                CMD_SET_PROFILE, encode_profile(row, values),
+                f"整挡同步第 {row + 1} 挡（含电机 Kp/Ki）")
         return True
 
     def _log(self, message: str, level: str = "INFO") -> None:
@@ -1237,6 +1219,7 @@ class MainWindow(QMainWindow):
         self.field_write_timer.stop()
         self.pending_field_updates.clear()
         if self._queue_entire_table_to_ram():
+            self._log("已提交保存任务：同步 5 挡完整参数后写入外置 EEPROM")
             self._queue_ack(CMD_SAVE, b"", "保存五挡参数到外置 EEPROM", self._read_all)
 
     def _restore_defaults(self) -> None:

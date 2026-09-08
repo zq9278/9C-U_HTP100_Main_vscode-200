@@ -381,12 +381,13 @@ class MainWindow(QMainWindow):
         self.aging_forward_seconds.setValue(5.0)
         self.aging_forward_seconds.setSuffix(" 秒")
         aging.addWidget(self.aging_forward_seconds, 1, 1)
-        aging.addWidget(QLabel("后退等待"), 1, 2)
+        aging.addWidget(QLabel("归位最大等待"), 1, 2)
         self.aging_reverse_seconds = QDoubleSpinBox()
         self.aging_reverse_seconds.setRange(1.0, 120.0)
         self.aging_reverse_seconds.setDecimals(1)
         self.aging_reverse_seconds.setValue(5.0)
         self.aging_reverse_seconds.setSuffix(" 秒")
+        self.aging_reverse_seconds.setToolTip("仅作为归位超时上限；收到回零成功事件后立即开始下一轮，不额外等待。")
         aging.addWidget(self.aging_reverse_seconds, 1, 3)
         aging.addWidget(QLabel("允许欠压"), 1, 4)
         self.aging_pressure_tolerance = QDoubleSpinBox()
@@ -877,9 +878,7 @@ class MainWindow(QMainWindow):
                 f"累计：{self.stats['total']}，成功：{self.stats['success']}，失败：{self.stats['failed']}")
         should_continue = success or (self.continue_after_failure.isChecked() and safe_to_continue)
         if self.aging_button.isChecked() and should_continue:
-            self.aging_state = "cooldown"
-            self.aging_deadline = time.monotonic() + 2.0
-            self.aging_status.setText("本轮结束，2秒后开始下一轮")
+            self._begin_aging_cycle()
         else:
             self._stop_aging_ui("自动老化因故障停止" if not success else "自动老化停止")
 
@@ -959,8 +958,6 @@ class MainWindow(QMainWindow):
             if now >= self.aging_deadline:
                 self._aging_fail(
                     f"停止命令后{self.aging_reverse_seconds.value():.1f}秒未收到主控回零完成事件")
-        elif self.aging_state == "cooldown" and now >= self.aging_deadline:
-            self._begin_aging_cycle()
 
     def _prepare_failure_reason(self) -> str:
         data = self.last_telemetry

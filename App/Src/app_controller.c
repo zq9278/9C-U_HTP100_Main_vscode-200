@@ -452,7 +452,7 @@ void AppController_SetPower(bool charging, bool full, uint16_t soc, uint16_t mil
     g_app.status.charge_full = charging && full;
     g_app.status.battery_soc = soc;
     g_app.status.battery_mv = millivolts;
-    g_app.status.low_battery_warning = soc <= APP_LOW_BATTERY_WARNING_SOC;
+    g_app.status.low_battery_warning = soc < APP_LOW_BATTERY_WARNING_SOC;
     if (changed) {
         LOGI("[Power] external=%u full=%u soc=%u voltage=%umV",
              charging ? 1U : 0U, g_app.status.charge_full ? 1U : 0U,

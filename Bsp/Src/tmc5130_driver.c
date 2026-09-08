@@ -113,6 +113,7 @@ bool Tmc5130Driver_Configure(void)
         uint8_t address;
         uint32_t value;
     } registers[] = {
+        {0x34U, 0U}, /* Clear homing-only limit/latch setup for normal motion. */
         {0x01U, 0x00000001U}, {0x6CU, 0x000300C3U}, {0x10U, 0x00000C04U},
         {0x11U, 0x0000000AU}, {0x00U, 0x00000004U}, {0x13U, 0x000001F4U},
         {0x70U, 0x000701C8U}, {0x25U, 0x00015000U}, {0x24U, 0x00000001U},

@@ -30,6 +30,8 @@ typedef enum {
 #define PRESSURE_STEP_MAX_DT_S         0.10f
 #define TMC_RUNTIME_PROBE_PERIOD_MS     100U
 #define TMC_HOME_COMM_FAILURE_LIMIT     3U
+#define TMC_HOME_POLL_MS                10U
+#define TMC_HOME_CONFIRM_MS             50U
 
 #define HEAT_PID_DEFAULT_KP 30.0f
 #define HEAT_PID_DEFAULT_KI 5.0f
@@ -48,6 +50,9 @@ static uint32_t g_home_started_ms;
 static uint32_t g_home_last_poll_ms;
 static uint32_t g_home_last_log_ms;
 static uint32_t g_home_spi_errors;
+static bool g_home_stop_requested;
+static bool g_home_confirming;
+static uint32_t g_home_confirm_started_ms;
 
 static uint32_t g_ads_last_log_ms;
 static int32_t g_ads_last_raw;
@@ -327,8 +332,13 @@ void TreatmentHw_HeatTelemetry(float *power_percent, float *integral_output)
 
 bool TreatmentHw_HomeBegin(void)
 {
-    Tmc5130Driver_Enable(true);
+    uint32_t previous_status;
+    Tmc5130Driver_Enable(false);
     if (!Tmc5130Driver_Configure() ||
+        /* Drain read-to-clear events left by an earlier homing attempt. */
+        Tmc5130Driver_Read(0x35U, &previous_status) != HAL_OK ||
+        /* REFR high active, positive-direction hard stop, active-edge latch. */
+        Tmc5130Driver_Write(0x34U, 0x82U) != HAL_OK ||
         Tmc5130Driver_Write(0x27U, 0x00010000U) != HAL_OK ||
         Tmc5130Driver_Write(0x20U, 1U) != HAL_OK) {
         LOGE("[Motor] Home begin failed while configuring TMC5130");
@@ -339,7 +349,10 @@ bool TreatmentHw_HomeBegin(void)
     g_home_last_poll_ms = 0U;
     g_home_last_log_ms = g_home_started_ms;
     g_home_spi_errors = 0U;
+    g_home_stop_requested = false;
+    g_home_confirming = false;
     g_home_active = true;
+    Tmc5130Driver_Enable(true);
     LOGI("[Motor] Home command accepted");
     return true;
 }
@@ -360,11 +373,12 @@ AppAsyncResult TreatmentHw_HomePoll(void)
              (unsigned long)g_home_spi_errors);
         return APP_ASYNC_FAILED;
     }
-    if (now - g_home_last_poll_ms < 100U) {
+    if (now - g_home_last_poll_ms < TMC_HOME_POLL_MS) {
         return APP_ASYNC_BUSY;
     }
     g_home_last_poll_ms = now;
     if (Tmc5130Driver_Read(0x35U, &ramp_status) != HAL_OK) {
+        g_home_confirming = false;
         g_home_spi_errors++;
         if (now - g_home_last_log_ms >= 500U) {
             LOGW("[Motor] Home poll SPI failure elapsed=%lu ms count=%lu",
@@ -380,6 +394,7 @@ AppAsyncResult TreatmentHw_HomePoll(void)
         return APP_ASYNC_BUSY;
     }
     if (!Tmc5130Driver_Probe()) {
+        g_home_confirming = false;
         g_home_spi_errors++;
         if (g_home_spi_errors >= TMC_HOME_COMM_FAILURE_LIMIT) {
             Tmc5130Driver_Enable(false);
@@ -390,18 +405,54 @@ AppAsyncResult TreatmentHw_HomePoll(void)
         return APP_ASYNC_BUSY;
     }
     g_home_spi_errors = 0U;
+    /* Capture both the current switch and latched transient events. Revoke
+     * motion immediately so switch bounce cannot restart the hardware ramp. */
+    if (!g_home_stop_requested && (ramp_status & 0x2AU) != 0U) {
+        if (Tmc5130Driver_Write(0x27U, 0U) != HAL_OK ||
+            Tmc5130Driver_Write(0x20U, 3U) != HAL_OK) {
+            Tmc5130Driver_Enable(false);
+            g_home_active = false;
+            return APP_ASYNC_COMM_FAILED;
+        }
+        g_home_stop_requested = true;
+        g_home_confirming = false;
+        return APP_ASYNC_BUSY;
+    }
     if (now - g_home_last_log_ms >= 500U) {
         LOGI("[Motor] Home polling elapsed=%lu ms RAMP_STAT=0x%08lX",
              (unsigned long)(now - g_home_started_ms),
              (unsigned long)ramp_status);
         g_home_last_log_ms = now;
     }
-    if ((ramp_status & 0x02U) == 0U) {
+    if (!g_home_stop_requested) {
         return APP_ASYNC_BUSY;
     }
-
-    (void)Tmc5130Driver_Write(0x21U, 0U);
-    (void)Tmc5130Driver_Write(0x2DU, 0U);
+    /* Never resume motion after an unconfirmed trigger. Keep stopped and
+     * require fresh, consecutive observations; the overall timeout applies. */
+    if ((ramp_status & 0x402U) != 0x402U) {
+        g_home_confirming = false;
+        return APP_ASYNC_BUSY;
+    }
+    if (!g_home_confirming) {
+        g_home_confirm_started_ms = HAL_GetTick();
+        g_home_confirming = true;
+        return APP_ASYNC_BUSY;
+    }
+    if (HAL_GetTick() - g_home_confirm_started_ms < TMC_HOME_CONFIRM_MS) {
+        return APP_ASYNC_BUSY;
+    }
+    uint32_t actual_position;
+    uint32_t target_position;
+    if (Tmc5130Driver_Write(0x21U, 0U) != HAL_OK ||
+        Tmc5130Driver_Write(0x2DU, 0U) != HAL_OK ||
+        Tmc5130Driver_Read(0x21U, &actual_position) != HAL_OK ||
+        Tmc5130Driver_Read(0x2DU, &target_position) != HAL_OK ||
+        actual_position != 0U || target_position != 0U) {
+        Tmc5130Driver_Stop();
+        g_home_active = false;
+        LOGE("[Motor] Home zero write/readback failed");
+        return APP_ASYNC_COMM_FAILED;
+    }
     Tmc5130Driver_Stop();
     g_home_active = false;
     LOGI("[Motor] Home reference reached elapsed=%lu ms RAMP_STAT=0x%08lX",

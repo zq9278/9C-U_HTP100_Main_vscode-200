@@ -33,12 +33,18 @@
 #define APP_PRESSURE_DISPLAY_PERIOD_MS    250U
 #define APP_SENSOR_LOG_PERIOD_MS          1000U
 #define APP_BATTERY_POLL_PERIOD_MS        100U
+#define APP_SCREEN_POWER_ON_DELAY_MS     500U
 #define APP_EYE_POLL_PERIOD_MS            100U
 #define APP_EYE_INSERT_CONFIRM_SAMPLES    5U
 #define APP_EYE_RECONNECT_GRACE_MS        1000U
 #define APP_EYE_STARTUP_ABSENT_SAMPLES    15U
 #define APP_SCREEN_TIMEOUT_MS             2000U
 #define APP_HOME_TIMEOUT_MS               8000U
+/* Accept sustained low pressure after the minimum homing time as home reached. */
+#define APP_HOME_LOW_PRESSURE_SUCCESS     1U
+#define APP_HOME_LOW_PRESSURE_AFTER_MS    5000U
+#define APP_HOME_LOW_PRESSURE_CONFIRM_MS  500U
+#define APP_HOME_LOW_PRESSURE_MMHG        10.0f
 
 /* Set to 1U to send new-screen fault status frames (0x2F01) to the LCD. */
 #define APP_ENABLE_SCREEN_FAULT_REPORT    1U

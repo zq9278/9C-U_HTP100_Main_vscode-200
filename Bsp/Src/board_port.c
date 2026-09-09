@@ -22,6 +22,10 @@ static volatile bool g_button_event;
 static volatile bool g_power_loss_event;
 static bool g_ads_ready;
 static uint32_t g_ads_last_retry_ms;
+/* GPIO initialization enables LCD_PW. Delay only a subsequent off-to-on. */
+static bool g_screen_power_enabled = true;
+static bool g_screen_power_on_pending;
+static uint32_t g_screen_power_on_started_ms;
 
 static uint32_t board_now_ms(void)
 {
@@ -62,10 +66,34 @@ static bool board_power_read(bool *charging, bool *full, uint16_t *soc,
                              uint16_t *millivolts)
 {
     if (!ChargerDriver_Read(charging, full, soc, millivolts)) {
+        /* Unknown power state must not complete a pending power-on. */
+        g_screen_power_on_pending = false;
         return false;
     }
-    /* External USB power blocks treatment and also blanks the screen. */
-    ScreenUart_SetPower(!*charging || AppController_DebugMode());
+    /* Keep polling normally while the supply settles after USB removal.
+     * Every completion is backed by a fresh charger read; reinsertion cancels
+     * the pending enable. Debug mode retains its always-on screen policy. */
+    if (AppController_DebugMode()) {
+        g_screen_power_on_pending = false;
+        g_screen_power_enabled = true;
+        ScreenUart_SetPower(true);
+    } else if (*charging) {
+        g_screen_power_on_pending = false;
+        g_screen_power_enabled = false;
+        ScreenUart_SetPower(false);
+    } else if (!g_screen_power_enabled) {
+        uint32_t now = HAL_GetTick();
+        if (!g_screen_power_on_pending) {
+            g_screen_power_on_started_ms = now;
+            g_screen_power_on_pending = true;
+        }
+        if (now - g_screen_power_on_started_ms >= APP_SCREEN_POWER_ON_DELAY_MS) {
+            ScreenUart_SetPower(true);
+            g_screen_power_enabled = true;
+            g_screen_power_on_pending = false;
+            LOGI("[Screen] Power enabled after USB removal delay");
+        }
+    }
     return true;
 }
 

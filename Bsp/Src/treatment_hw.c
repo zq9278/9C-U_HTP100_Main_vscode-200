@@ -53,6 +53,10 @@ static uint32_t g_home_spi_errors;
 static bool g_home_stop_requested;
 static bool g_home_confirming;
 static uint32_t g_home_confirm_started_ms;
+static bool g_home_low_confirming;
+static uint32_t g_home_low_started_ms;
+static uint32_t g_home_low_sample_ms;
+static float g_home_pressure_target = 350.0f;
 
 static uint32_t g_ads_last_log_ms;
 static int32_t g_ads_last_raw;
@@ -351,6 +355,8 @@ bool TreatmentHw_HomeBegin(void)
     g_home_spi_errors = 0U;
     g_home_stop_requested = false;
     g_home_confirming = false;
+    g_home_low_confirming = false;
+    g_home_low_sample_ms = 0U;
     g_home_active = true;
     Tmc5130Driver_Enable(true);
     LOGI("[Motor] Home command accepted");
@@ -405,6 +411,57 @@ AppAsyncResult TreatmentHw_HomePoll(void)
         return APP_ASYNC_BUSY;
     }
     g_home_spi_errors = 0U;
+    /* Sample fresh data only near the fallback deadline. A missed/invalid
+     * sample or a sampling gap breaks the continuous-low interval. */
+#if APP_HOME_LOW_PRESSURE_SUCCESS
+    if (now - g_home_started_ms >=
+        APP_HOME_LOW_PRESSURE_AFTER_MS - APP_HOME_LOW_PRESSURE_CONFIRM_MS) {
+        int32_t raw;
+        float pressure = NAN;
+        uint32_t sampled;
+        if (Ads1220Driver_Ready() && Ads1220Driver_ZeroValid() &&
+            Ads1220Driver_ReadRaw(&raw)) {
+            pressure = Ads1220Driver_PressureFromRaw(raw, g_home_pressure_target);
+        }
+        sampled = HAL_GetTick();
+        if (!isfinite(pressure) || pressure >= APP_HOME_LOW_PRESSURE_MMHG) {
+            g_home_low_confirming = false;
+        } else {
+            if (!g_home_low_confirming || sampled - g_home_low_sample_ms > 100U) {
+                g_home_low_started_ms = sampled;
+                g_home_low_confirming = true;
+            }
+            if (sampled - g_home_started_ms >= APP_HOME_LOW_PRESSURE_AFTER_MS &&
+                sampled - g_home_low_started_ms >= APP_HOME_LOW_PRESSURE_CONFIRM_MS) {
+                uint32_t actual_position;
+                uint32_t target_position;
+                uint32_t velocity = 0U;
+                bool velocity_valid = Tmc5130Driver_Read(0x22U, &velocity) == HAL_OK;
+                Tmc5130Driver_Stop();
+                if (Tmc5130Driver_Write(0x21U, 0U) != HAL_OK ||
+                    Tmc5130Driver_Write(0x2DU, 0U) != HAL_OK ||
+                    Tmc5130Driver_Read(0x21U, &actual_position) != HAL_OK ||
+                    Tmc5130Driver_Read(0x2DU, &target_position) != HAL_OK ||
+                    actual_position != 0U || target_position != 0U) {
+                    g_home_active = false;
+                    LOGE("[Motor] Low-pressure home zero write/readback failed");
+                    return APP_ASYNC_COMM_FAILED;
+                }
+                g_home_active = false;
+                Ads1220Result sensor = Ads1220Driver_CheckSensor();
+                LOGI("[Motor] Home accepted by low pressure: elapsed=%lums low=%lums pressure_x10=%ld raw=%ld RAMP_STAT=0x%08lX VACTUAL=0x%08lX velocity_valid=%u trigger_seen=%u sensor=%u",
+                     (unsigned long)(sampled - g_home_started_ms),
+                     (unsigned long)(sampled - g_home_low_started_ms),
+                     (long)(pressure * 10.0f), (long)raw,
+                     (unsigned long)ramp_status, (unsigned long)velocity,
+                     velocity_valid ? 1U : 0U, g_home_stop_requested ? 1U : 0U,
+                     (unsigned)sensor);
+                return APP_ASYNC_OK;
+            }
+        }
+        g_home_low_sample_ms = sampled;
+    }
+#endif
     /* Capture both the current switch and latched transient events. Revoke
      * motion immediately so switch bounce cannot restart the hardware ramp. */
     if (!g_home_stop_requested && (ramp_status & 0x2AU) != 0U) {
@@ -498,6 +555,7 @@ bool TreatmentHw_PressureStart(float target_mmhg)
 
 AppFault TreatmentHw_PressureStep(float target_mmhg, float *measured_mmhg)
 {
+    g_home_pressure_target = target_mmhg;
     const PressureTuningProfile *profile = PressureTuning_ProfileForTarget(target_mmhg);
     Ads1220Result sensor_result;
     int32_t raw;

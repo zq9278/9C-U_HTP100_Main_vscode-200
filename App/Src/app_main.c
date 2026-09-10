@@ -47,6 +47,8 @@ void AppMain_Task(void *argument)
     uint8_t serial_data[128];
     uint32_t last_eye_ms = 0U;
     uint32_t last_power_ms = 0U;
+    bool external_power_seen = false;
+    bool previous_external_power = false;
 
     (void)argument;
     ScreenProtocol_Init(Board_ScreenWrite);
@@ -97,6 +99,17 @@ void AppMain_Task(void *argument)
             uint16_t millivolts = 0U;
             last_power_ms = now;
             if (Board_AppPort()->power_read(&charging, &full, &soc, &millivolts)) {
+                /* Reset only on an observed external-power falling edge.
+                 * A battery-only boot (or a failed status read) must never
+                 * request another reset. Disable actuators before resetting;
+                 * the normal startup path will configure and home again. */
+                if (external_power_seen && previous_external_power && !charging) {
+                    Board_AppPort()->safe_outputs_off();
+                    LOGW("[Power] USB removed: outputs off, software reset requested");
+                    NVIC_SystemReset();
+                }
+                previous_external_power = charging;
+                external_power_seen = true;
                 AppController_SetPower(charging, full, soc, millivolts);
             }
         }

@@ -46,6 +46,11 @@
 #define APP_HOME_LOW_PRESSURE_CONFIRM_MS  500U
 #define APP_HOME_LOW_PRESSURE_MMHG        10.0f
 
+/* TMC5130 brownout recovery timing and retry limits. */
+#define APP_TMC_RECOVERY_RETRY_MS         100U
+#define APP_TMC_TREATMENT_RECOVERY_TRIES  3U
+#define APP_TMC_HOME_RECOVERY_TRIES       2U
+
 /* Set to 1U to send new-screen fault status frames (0x2F01) to the LCD. */
 #define APP_ENABLE_SCREEN_FAULT_REPORT    1U
 

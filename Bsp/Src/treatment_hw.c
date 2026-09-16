@@ -57,6 +57,9 @@ static bool g_home_low_confirming;
 static uint32_t g_home_low_started_ms;
 static uint32_t g_home_low_sample_ms;
 static float g_home_pressure_target = 350.0f;
+static bool g_home_recovering;
+static uint8_t g_home_recovery_attempts;
+static uint32_t g_home_recovery_next_ms;
 
 static uint32_t g_ads_last_log_ms;
 static int32_t g_ads_last_raw;
@@ -81,6 +84,9 @@ static uint8_t g_pressure_filter_index;
 static bool g_pressure_filter_valid;
 static bool g_pressure_hold_timer_started;
 static bool g_pressure_active;
+static bool g_pressure_recovering;
+static uint8_t g_pressure_recovery_attempts;
+static uint32_t g_pressure_recovery_next_ms;
 
 static float g_heat_integral;
 static float g_heat_previous_error;
@@ -90,6 +96,10 @@ static float g_heat_kd;
 static float g_heat_power_percent;
 static bool g_heat_previous_valid;
 static bool g_heat_pwm_started;
+
+static AppFault pressure_begin_recovery(const char *reason);
+static AppFault pressure_recovery_poll(float target_mmhg,
+                                       float *measured_mmhg);
 
 static float clamp_float(float value, float minimum, float maximum)
 {
@@ -243,6 +253,7 @@ void TreatmentHw_SafeOutputsOff(void)
     g_heat_previous_valid = false;
     g_heat_pwm_started = false;
     g_pressure_active = false;
+    g_pressure_recovering = false;
     g_pressure_command = 0.0f;
     pressure_control_reset();
     pressure_filter_reset();
@@ -334,21 +345,68 @@ void TreatmentHw_HeatTelemetry(float *power_percent, float *integral_output)
     if (integral_output != NULL) *integral_output = g_heat_ki * g_heat_integral;
 }
 
-bool TreatmentHw_HomeBegin(void)
+static bool home_configure_driver(bool verify)
 {
     uint32_t previous_status;
+
     Tmc5130Driver_Enable(false);
-    if (!Tmc5130Driver_Configure() ||
-        /* Drain read-to-clear events left by an earlier homing attempt. */
-        Tmc5130Driver_Read(0x35U, &previous_status) != HAL_OK ||
-        /* REFR high active, positive-direction hard stop, active-edge latch. */
-        Tmc5130Driver_Write(0x34U, 0x82U) != HAL_OK ||
-        Tmc5130Driver_Write(0x27U, 0x00010000U) != HAL_OK ||
-        Tmc5130Driver_Write(0x20U, 1U) != HAL_OK) {
-        LOGE("[Motor] Home begin failed while configuring TMC5130");
-        Tmc5130Driver_Enable(false);
-        return false;
+    return Tmc5130Driver_Configure() &&
+           (!verify || Tmc5130Driver_VerifyConfiguration()) &&
+           /* Drain read-to-clear events left by an earlier homing attempt. */
+           Tmc5130Driver_Read(0x35U, &previous_status) == HAL_OK &&
+           /* REFR high active, positive-direction hard stop, edge latch. */
+           Tmc5130Driver_Write(0x34U, 0x82U) == HAL_OK &&
+           Tmc5130Driver_Write(0x27U, 0x00010000U) == HAL_OK &&
+           Tmc5130Driver_Write(0x20U, 1U) == HAL_OK;
+}
+
+static AppAsyncResult home_begin_recovery(uint32_t now, const char *reason)
+{
+    Tmc5130Driver_Enable(false);
+    g_home_recovering = true;
+    g_home_recovery_next_ms = now + APP_TMC_RECOVERY_RETRY_MS;
+    g_home_spi_errors = 0U;
+    g_home_confirming = false;
+    g_home_stop_requested = false;
+    LOGW("[Motor] Home recovery scheduled: %s attempt=%u/%u elapsed=%lums",
+         reason, (unsigned)g_home_recovery_attempts,
+         (unsigned)APP_TMC_HOME_RECOVERY_TRIES,
+         (unsigned long)(now - g_home_started_ms));
+    return APP_ASYNC_BUSY;
+}
+
+static AppAsyncResult home_recovery_poll(uint32_t now)
+{
+    if ((int32_t)(now - g_home_recovery_next_ms) < 0) {
+        return APP_ASYNC_BUSY;
     }
+    if (g_home_recovery_attempts >= APP_TMC_HOME_RECOVERY_TRIES) {
+        g_home_active = false;
+        g_home_recovering = false;
+        LOGE("[Motor] Home recovery exhausted attempts=%u elapsed=%lums",
+             (unsigned)g_home_recovery_attempts,
+             (unsigned long)(now - g_home_started_ms));
+        return APP_ASYNC_COMM_FAILED;
+    }
+    g_home_recovery_attempts++;
+    if (!home_configure_driver(true)) {
+        LOGW("[Motor] Home recovery configure/verify failed attempt=%u/%u",
+             (unsigned)g_home_recovery_attempts,
+             (unsigned)APP_TMC_HOME_RECOVERY_TRIES);
+        g_home_recovery_next_ms = HAL_GetTick() + APP_TMC_RECOVERY_RETRY_MS;
+        return APP_ASYNC_BUSY;
+    }
+    g_home_recovering = false;
+    g_home_last_poll_ms = HAL_GetTick();
+    Tmc5130Driver_Enable(true);
+    LOGI("[Motor] Home recovery restarted attempt=%u elapsed=%lums",
+         (unsigned)g_home_recovery_attempts,
+         (unsigned long)(HAL_GetTick() - g_home_started_ms));
+    return APP_ASYNC_BUSY;
+}
+
+bool TreatmentHw_HomeBegin(void)
+{
     g_home_started_ms = HAL_GetTick();
     g_home_last_poll_ms = 0U;
     g_home_last_log_ms = g_home_started_ms;
@@ -357,7 +415,15 @@ bool TreatmentHw_HomeBegin(void)
     g_home_confirming = false;
     g_home_low_confirming = false;
     g_home_low_sample_ms = 0U;
+    g_home_recovering = false;
+    g_home_recovery_attempts = 0U;
     g_home_active = true;
+    if (!home_configure_driver(false)) {
+        LOGW("[Motor] Home initial configuration failed; scheduling recovery");
+        (void)home_begin_recovery(g_home_started_ms,
+                                  "initial configuration failed");
+        return true;
+    }
     Tmc5130Driver_Enable(true);
     LOGI("[Motor] Home command accepted");
     return true;
@@ -379,6 +445,9 @@ AppAsyncResult TreatmentHw_HomePoll(void)
              (unsigned long)g_home_spi_errors);
         return APP_ASYNC_FAILED;
     }
+    if (g_home_recovering) {
+        return home_recovery_poll(now);
+    }
     if (now - g_home_last_poll_ms < TMC_HOME_POLL_MS) {
         return APP_ASYNC_BUSY;
     }
@@ -393,9 +462,7 @@ AppAsyncResult TreatmentHw_HomePoll(void)
             g_home_last_log_ms = now;
         }
         if (g_home_spi_errors >= TMC_HOME_COMM_FAILURE_LIMIT) {
-            Tmc5130Driver_Enable(false);
-            g_home_active = false;
-            return APP_ASYNC_COMM_FAILED;
+            return home_begin_recovery(now, "RAMP_STAT read failed");
         }
         return APP_ASYNC_BUSY;
     }
@@ -403,10 +470,8 @@ AppAsyncResult TreatmentHw_HomePoll(void)
         g_home_confirming = false;
         g_home_spi_errors++;
         if (g_home_spi_errors >= TMC_HOME_COMM_FAILURE_LIMIT) {
-            Tmc5130Driver_Enable(false);
-            g_home_active = false;
             LOGE("[Motor] TMC5130 disconnected during home");
-            return APP_ASYNC_COMM_FAILED;
+            return home_begin_recovery(now, "identity probe failed");
         }
         return APP_ASYNC_BUSY;
     }
@@ -443,9 +508,9 @@ AppAsyncResult TreatmentHw_HomePoll(void)
                     Tmc5130Driver_Read(0x21U, &actual_position) != HAL_OK ||
                     Tmc5130Driver_Read(0x2DU, &target_position) != HAL_OK ||
                     actual_position != 0U || target_position != 0U) {
-                    g_home_active = false;
                     LOGE("[Motor] Low-pressure home zero write/readback failed");
-                    return APP_ASYNC_COMM_FAILED;
+                    return home_begin_recovery(sampled,
+                                               "low-pressure zero readback failed");
                 }
                 g_home_active = false;
                 Ads1220Result sensor = Ads1220Driver_CheckSensor();
@@ -467,9 +532,7 @@ AppAsyncResult TreatmentHw_HomePoll(void)
     if (!g_home_stop_requested && (ramp_status & 0x2AU) != 0U) {
         if (Tmc5130Driver_Write(0x27U, 0U) != HAL_OK ||
             Tmc5130Driver_Write(0x20U, 3U) != HAL_OK) {
-            Tmc5130Driver_Enable(false);
-            g_home_active = false;
-            return APP_ASYNC_COMM_FAILED;
+            return home_begin_recovery(now, "reference stop command failed");
         }
         g_home_stop_requested = true;
         g_home_confirming = false;
@@ -506,9 +569,8 @@ AppAsyncResult TreatmentHw_HomePoll(void)
         Tmc5130Driver_Read(0x2DU, &target_position) != HAL_OK ||
         actual_position != 0U || target_position != 0U) {
         Tmc5130Driver_Stop();
-        g_home_active = false;
         LOGE("[Motor] Home zero write/readback failed");
-        return APP_ASYNC_COMM_FAILED;
+        return home_begin_recovery(HAL_GetTick(), "zero readback failed");
     }
     Tmc5130Driver_Stop();
     g_home_active = false;
@@ -525,6 +587,7 @@ void TreatmentHw_HomeCancel(void)
              (unsigned long)(HAL_GetTick() - g_home_started_ms));
     }
     g_home_active = false;
+    g_home_recovering = false;
     Tmc5130Driver_Stop();
 }
 
@@ -544,6 +607,8 @@ bool TreatmentHw_PressureStart(float target_mmhg)
     g_pressure_last_tmc_probe_ms = g_pressure_stage_ms;
     g_pressure_last_sensor_check_ms = g_pressure_stage_ms;
     g_pressure_command = 0.0f;
+    g_pressure_recovering = false;
+    g_pressure_recovery_attempts = 0U;
     pressure_control_reset();
     pressure_filter_reset();
     g_ads_sample_valid = false;
@@ -570,7 +635,14 @@ AppFault TreatmentHw_PressureStep(float target_mmhg, float *measured_mmhg)
     float command;
     uint32_t retract_time_ms;
 
-    if (!g_pressure_active || measured_mmhg == NULL) {
+    if (measured_mmhg == NULL) {
+        (void)pressure_set_speed(0.0f);
+        return APP_FAULT_PRESSURE_COMM;
+    }
+    if (g_pressure_recovering) {
+        return pressure_recovery_poll(target_mmhg, measured_mmhg);
+    }
+    if (!g_pressure_active) {
         (void)pressure_set_speed(0.0f);
         return APP_FAULT_PRESSURE_COMM;
     }
@@ -580,7 +652,7 @@ AppFault TreatmentHw_PressureStep(float target_mmhg, float *measured_mmhg)
             Tmc5130Driver_Enable(false);
             g_pressure_active = false;
             LOGE("[Motor] TMC5130 disconnected during pressure control");
-            return APP_FAULT_MOTOR_COMM;
+            return pressure_begin_recovery("identity probe failed");
         }
     }
     if (now - g_pressure_last_sensor_check_ms >= APP_PRESSURE_SENSOR_CHECK_MS) {
@@ -656,9 +728,10 @@ AppFault TreatmentHw_PressureStep(float target_mmhg, float *measured_mmhg)
             g_pressure_stage_ms = now;
             LOGI("[Pressure] fast->slow pressure=%ld threshold=%ld",
                  (long)*measured_mmhg, (long)speed_switch);
-            if (!pressure_set_speed(profile->approach_speed)) return APP_FAULT_MOTOR_COMM;
+            if (!pressure_set_speed(profile->approach_speed))
+                return pressure_begin_recovery("fast-to-slow command failed");
         } else if (!pressure_set_speed(profile->fast_speed)) {
-            return APP_FAULT_MOTOR_COMM;
+            return pressure_begin_recovery("fast command failed");
         }
         break;
     case PRESS_STAGE_SLOW:
@@ -679,9 +752,10 @@ AppFault TreatmentHw_PressureStep(float target_mmhg, float *measured_mmhg)
                  (long)*measured_mmhg,
                  (long)hold_switch,
                  g_pressure_hold_timer_started ? "started" : "waiting-target");
-            if (!pressure_set_speed(command)) return APP_FAULT_MOTOR_COMM;
+            if (!pressure_set_speed(command))
+                return pressure_begin_recovery("slow-to-hold command failed");
         } else if (!pressure_set_speed(profile->approach_speed)) {
-            return APP_FAULT_MOTOR_COMM;
+            return pressure_begin_recovery("slow command failed");
         }
         break;
     case PRESS_STAGE_HOLD:
@@ -697,7 +771,8 @@ AppFault TreatmentHw_PressureStep(float target_mmhg, float *measured_mmhg)
         }
         if (g_pressure_hold_timer_started &&
             now - g_pressure_hold_started_ms >= PRESSURE_HOLD_TIME_MS) {
-            if (!pressure_set_speed(0.0f)) return APP_FAULT_MOTOR_COMM;
+            if (!pressure_set_speed(0.0f))
+                return pressure_begin_recovery("hold stop command failed");
             g_pressure_stage = PRESS_STAGE_RETRACT;
             g_pressure_stage_ms = now;
             pressure_control_reset();
@@ -707,12 +782,14 @@ AppFault TreatmentHw_PressureStep(float target_mmhg, float *measured_mmhg)
         } else {
             command = pressure_control_command(profile, error, dt_s,
                                                g_pressure_hold_timer_started);
-            if (!pressure_set_speed(command)) return APP_FAULT_MOTOR_COMM;
+            if (!pressure_set_speed(command))
+                return pressure_begin_recovery("hold PID command failed");
         }
         break;
     case PRESS_STAGE_RETRACT:
         if (stage_elapsed_ms >= retract_time_ms) {
-            if (!pressure_set_speed(0.0f)) return APP_FAULT_MOTOR_COMM;
+            if (!pressure_set_speed(0.0f))
+                return pressure_begin_recovery("retract stop command failed");
             g_pressure_stage = PRESS_STAGE_FAST;
             g_pressure_stage_ms = now;
             pressure_control_reset();
@@ -721,12 +798,99 @@ AppFault TreatmentHw_PressureStep(float target_mmhg, float *measured_mmhg)
                  (unsigned long)stage_elapsed_ms,
                  (unsigned long)retract_time_ms);
         } else {
-            if (!pressure_set_speed(-profile->retract_speed)) return APP_FAULT_MOTOR_COMM;
+            if (!pressure_set_speed(-profile->retract_speed))
+                return pressure_begin_recovery("retract command failed");
         }
         break;
     default:
         return APP_FAULT_PRESSURE_COMM;
     }
+    return APP_FAULT_NONE;
+}
+
+static AppFault pressure_begin_recovery(const char *reason)
+{
+    Tmc5130Driver_Enable(false);
+    g_pressure_active = false;
+    g_pressure_command = 0.0f;
+    pressure_control_reset();
+    g_pressure_recovering = true;
+    g_pressure_recovery_attempts = 0U;
+    g_pressure_recovery_next_ms = HAL_GetTick() + APP_TMC_RECOVERY_RETRY_MS;
+    LOGW("[Motor] Treatment recovery started: %s", reason);
+    return APP_FAULT_NONE;
+}
+
+static AppFault pressure_recovery_poll(float target_mmhg, float *measured_mmhg)
+{
+    const PressureTuningProfile *profile;
+    Ads1220Result sensor_result;
+    int32_t raw;
+    float pressure;
+    float speed_switch;
+    float hold_switch;
+    uint32_t now = HAL_GetTick();
+
+    if ((int32_t)(now - g_pressure_recovery_next_ms) < 0) {
+        *measured_mmhg = g_pressure_filter_valid ? g_pressure_filtered : 0.0f;
+        return APP_FAULT_NONE;
+    }
+    g_pressure_recovery_attempts++;
+    Tmc5130Driver_Enable(false);
+    if (!Tmc5130Driver_Configure() ||
+        !Tmc5130Driver_VerifyConfiguration()) {
+        LOGW("[Motor] Treatment recovery configure/verify failed attempt=%u/%u",
+             (unsigned)g_pressure_recovery_attempts,
+             (unsigned)APP_TMC_TREATMENT_RECOVERY_TRIES);
+        if (g_pressure_recovery_attempts >= APP_TMC_TREATMENT_RECOVERY_TRIES) {
+            g_pressure_recovering = false;
+            return APP_FAULT_MOTOR_COMM;
+        }
+        g_pressure_recovery_next_ms = HAL_GetTick() + APP_TMC_RECOVERY_RETRY_MS;
+        *measured_mmhg = g_pressure_filter_valid ? g_pressure_filtered : 0.0f;
+        return APP_FAULT_NONE;
+    }
+    sensor_result = Ads1220Driver_CheckSensor();
+    if (sensor_result != ADS1220_RESULT_OK ||
+        !Ads1220Driver_ZeroValid() || !Ads1220Driver_ReadRaw(&raw)) {
+        g_pressure_recovering = false;
+        LOGE("[Motor] Treatment recovery pressure validation failed sensor=%u zero=%u",
+             (unsigned)sensor_result, Ads1220Driver_ZeroValid() ? 1U : 0U);
+        return sensor_result == ADS1220_RESULT_SENSOR_SHORT ||
+               sensor_result == ADS1220_RESULT_SENSOR_OPEN ?
+               APP_FAULT_PRESSURE_SENSOR : APP_FAULT_PRESSURE_COMM;
+    }
+
+    pressure = Ads1220Driver_PressureFromRaw(raw, target_mmhg);
+    if (!isfinite(pressure) || pressure >= APP_MAX_SAFE_PRESSURE_MMHG) {
+        g_pressure_recovering = false;
+        LOGE("[Motor] Treatment recovery rejected pressure_x10=%ld",
+             (long)(pressure * 10.0f));
+        return APP_FAULT_OVER_PRESSURE;
+    }
+    profile = PressureTuning_ProfileForTarget(target_mmhg);
+    speed_switch = target_mmhg * profile->speed_switch_percent * 0.01f;
+    hold_switch = target_mmhg * profile->hold_switch_percent * 0.01f;
+    pressure_control_reset();
+    pressure_filter_reset();
+    *measured_mmhg = pressure_filter_update(pressure);
+    g_ads_last_raw = raw;
+    g_ads_last_unfiltered_pressure_x10 = (int32_t)(pressure * 10.0f);
+    g_ads_last_pressure_x10 = (int32_t)(*measured_mmhg * 10.0f);
+    g_ads_sample_valid = true;
+    g_pressure_stage = pressure >= hold_switch ? PRESS_STAGE_HOLD :
+                       pressure >= speed_switch ? PRESS_STAGE_SLOW : PRESS_STAGE_FAST;
+    g_pressure_stage_ms = now;
+    g_pressure_last_step_ms = now;
+    g_pressure_last_tmc_probe_ms = now;
+    g_pressure_last_sensor_check_ms = now;
+
+    Tmc5130Driver_Enable(true);
+    g_pressure_active = true;
+    g_pressure_recovering = false;
+    LOGI("[Motor] Treatment recovery resumed stage=%u pressure_x10=%ld attempt=%u",
+         (unsigned)g_pressure_stage, (long)(pressure * 10.0f),
+         (unsigned)g_pressure_recovery_attempts);
     return APP_FAULT_NONE;
 }
 
@@ -752,6 +916,7 @@ bool TreatmentHw_PressureTelemetry(int32_t *raw, float *pressure_mmhg,
 void TreatmentHw_PressureStop(void)
 {
     g_pressure_active = false;
+    g_pressure_recovering = false;
     g_pressure_command = 0.0f;
     pressure_control_reset();
     Tmc5130Driver_Stop();

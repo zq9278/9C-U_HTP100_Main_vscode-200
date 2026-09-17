@@ -132,36 +132,6 @@ bool Tmc5130Driver_Configure(void)
     return true;
 }
 
-bool Tmc5130Driver_VerifyConfiguration(void)
-{
-    static const struct {
-        uint8_t address;
-        uint32_t expected;
-    } registers[] = {
-        {0x00U, 0x00000004U}, {0x10U, 0x00000C04U},
-        {0x11U, 0x0000000AU}, {0x24U, 0x00000001U},
-        {0x25U, 0x00015000U}, {0x26U, 0x00001001U},
-        {0x27U, 0x00004000U}, {0x28U, 0x00001FFFU},
-        {0x2AU, 0x00008000U}, {0x2BU, 0x0000000AU},
-        {0x34U, 0x00000000U}
-    };
-
-    if (!Tmc5130Driver_Probe()) {
-        return false;
-    }
-    for (size_t index = 0U; index < sizeof(registers) / sizeof(registers[0]); ++index) {
-        uint32_t actual = 0U;
-        if (Tmc5130Driver_Read(registers[index].address, &actual) != HAL_OK ||
-            actual != registers[index].expected) {
-            LOGE("[TMC5130] Config verify failed REG%02X actual=0x%08lX expected=0x%08lX",
-                 (unsigned)registers[index].address, (unsigned long)actual,
-                 (unsigned long)registers[index].expected);
-            return false;
-        }
-    }
-    return true;
-}
-
 bool Tmc5130Driver_SetSpeed(int32_t speed)
 {
     uint32_t magnitude;

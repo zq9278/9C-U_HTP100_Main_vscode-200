@@ -351,7 +351,7 @@ static bool home_configure_driver(bool verify)
 
     Tmc5130Driver_Enable(false);
     return Tmc5130Driver_Configure() &&
-           (!verify || Tmc5130Driver_VerifyConfiguration()) &&
+           (!verify || Tmc5130Driver_Probe()) &&
            /* Drain read-to-clear events left by an earlier homing attempt. */
            Tmc5130Driver_Read(0x35U, &previous_status) == HAL_OK &&
            /* REFR high active, positive-direction hard stop, edge latch. */
@@ -838,8 +838,8 @@ static AppFault pressure_recovery_poll(float target_mmhg, float *measured_mmhg)
     g_pressure_recovery_attempts++;
     Tmc5130Driver_Enable(false);
     if (!Tmc5130Driver_Configure() ||
-        !Tmc5130Driver_VerifyConfiguration()) {
-        LOGW("[Motor] Treatment recovery configure/verify failed attempt=%u/%u",
+        !Tmc5130Driver_Probe()) {
+        LOGW("[Motor] Treatment recovery configure/probe failed attempt=%u/%u",
              (unsigned)g_pressure_recovery_attempts,
              (unsigned)APP_TMC_TREATMENT_RECOVERY_TRIES);
         if (g_pressure_recovery_attempts >= APP_TMC_TREATMENT_RECOVERY_TRIES) {

@@ -12,7 +12,6 @@ HAL_StatusTypeDef Tmc5130Driver_Write(uint8_t address, uint32_t value);
 HAL_StatusTypeDef Tmc5130Driver_Read(uint8_t address, uint32_t *value);
 bool Tmc5130Driver_Probe(void);
 bool Tmc5130Driver_Configure(void);
-bool Tmc5130Driver_VerifyConfiguration(void);
 bool Tmc5130Driver_SetSpeed(int32_t speed);
 void Tmc5130Driver_Stop(void);
 

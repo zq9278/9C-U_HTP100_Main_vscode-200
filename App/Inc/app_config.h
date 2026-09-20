@@ -24,6 +24,10 @@
 #define APP_TEMP_COMM_FAULT_CONFIRM_MS    1500U
 #define APP_PRESSURE_CONTROL_PERIOD_MS    20U
 #define APP_PRESSURE_SENSOR_CHECK_MS      1000U
+#define APP_PRESSURE_FAULT_CONFIRM_TRIES  3U
+#define APP_PRESSURE_FAULT_RETRY_MS       100U
+#define APP_PRESSURE_ZERO_TRIES           3U
+#define APP_PRESSURE_ZERO_RETRY_MS        200U
 /* ADS1220 BCS diagnostic limits. Validate against the production bridge and
  * input RC network; healthy BCS samples must remain between these limits. */
 #define APP_PRESSURE_SHORT_RAW_LIMIT      100000L

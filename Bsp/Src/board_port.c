@@ -50,7 +50,16 @@ static AppFault board_pressure_zero_calibrate(void)
         return APP_FAULT_PRESSURE_COMM;
     }
     g_ads_ready = true;
-    result = Ads1220Driver_ZeroCalibrate();
+    for (uint8_t attempt = 1U; attempt <= APP_PRESSURE_ZERO_TRIES; ++attempt) {
+        result = Ads1220Driver_ZeroCalibrate();
+        if (result == ADS1220_RESULT_OK) break;
+        LOGW("[ADS1220] Zero attempt=%u/%u failed result=%u",
+             (unsigned)attempt, (unsigned)APP_PRESSURE_ZERO_TRIES,
+             (unsigned)result);
+        if (attempt < APP_PRESSURE_ZERO_TRIES) {
+            vTaskDelay(pdMS_TO_TICKS(APP_PRESSURE_ZERO_RETRY_MS));
+        }
+    }
     if (result == ADS1220_RESULT_OK) {
         return APP_FAULT_NONE;
     }

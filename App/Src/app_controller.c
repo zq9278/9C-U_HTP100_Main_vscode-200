@@ -712,13 +712,18 @@ static void tick_heat(uint32_t now)
         if (!g_app.temp_comm_failure_timing) {
             g_app.temp_comm_failure_timing = true;
             g_app.temp_comm_failure_started_ms = now;
-            LOGW("[Temp] Read failed; waiting for eye-removal confirmation");
+            LOGW("[Temp] Read failed; retaining outputs during %lums confirmation window",
+                 (unsigned long)APP_TEMP_COMM_FAULT_CONFIRM_MS);
         } else if (now - g_app.temp_comm_failure_started_ms >=
                    APP_TEMP_COMM_FAULT_CONFIRM_MS) {
             g_app.temp_comm_failure_timing = false;
+            safe_outputs_off();
             AppController_RaiseFault(APP_FAULT_TMP112_COMM);
         }
         return;
+    }
+    if (g_app.temp_comm_failure_timing) {
+        LOGI("[Temp] Communication recovered; confirmation cancelled");
     }
     g_app.temp_comm_failure_timing = false;
     g_app.status.measured_temperature_c = measured;
@@ -823,11 +828,8 @@ void AppController_Tick(void)
         return;
     }
     tick_heat(now);
-    if (g_app.temp_comm_failure_timing) {
-        /* HeaterControl has already made the treatment outputs safe. Avoid
-         * restarting pressure while eye removal is being confirmed. */
-        return;
-    }
+    /* A transient temperature read failure retains output state. Continue
+     * pressure feedback and its protections during the confirmation window. */
     tick_pressure(now);
 }
 

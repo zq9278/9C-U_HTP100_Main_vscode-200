@@ -87,6 +87,8 @@ static bool g_pressure_active;
 static bool g_pressure_recovering;
 static uint8_t g_pressure_recovery_attempts;
 static uint32_t g_pressure_recovery_next_ms;
+static uint8_t g_pressure_fault_attempts;
+static uint32_t g_pressure_fault_next_ms;
 
 static float g_heat_integral;
 static float g_heat_previous_error;
@@ -245,6 +247,7 @@ void TreatmentHw_Init(void)
 
 void TreatmentHw_SafeOutputsOff(void)
 {
+    g_pressure_fault_attempts = 0U;
     __HAL_TIM_SET_COMPARE(&htim14, TIM_CHANNEL_1, 0U);
     (void)HAL_TIM_PWM_Stop(&htim14, TIM_CHANNEL_1);
     g_heat_integral = 0.0f;
@@ -269,7 +272,8 @@ bool TreatmentHw_HeaterControl(float target_c, float *measured_c)
     float pwm;
 
     if (!EyeDriver_ReadTemperature(measured_c)) {
-        TreatmentHw_SafeOutputsOff();
+        /* Keep the previous PWM and controller state during the application's
+         * bounded temperature-communication confirmation window. */
         return false;
     }
     error = target_c - *measured_c;
@@ -593,6 +597,7 @@ void TreatmentHw_HomeCancel(void)
 
 bool TreatmentHw_PressureStart(float target_mmhg)
 {
+    g_pressure_fault_attempts = 0U;
     if (!Ads1220Driver_ZeroValid()) {
         return false;
     }
@@ -618,7 +623,7 @@ bool TreatmentHw_PressureStart(float target_mmhg)
     return true;
 }
 
-AppFault TreatmentHw_PressureStep(float target_mmhg, float *measured_mmhg)
+static AppFault pressure_step_once(float target_mmhg, float *measured_mmhg)
 {
     g_home_pressure_target = target_mmhg;
     const PressureTuningProfile *profile = PressureTuning_ProfileForTarget(target_mmhg);
@@ -808,6 +813,53 @@ AppFault TreatmentHw_PressureStep(float target_mmhg, float *measured_mmhg)
     return APP_FAULT_NONE;
 }
 
+AppFault TreatmentHw_PressureStep(float target_mmhg, float *measured_mmhg)
+{
+    AppFault fault;
+    bool was_active = g_pressure_active;
+    bool was_recovering = g_pressure_recovering;
+
+    if (measured_mmhg == NULL) return APP_FAULT_PRESSURE_COMM;
+    *measured_mmhg = g_pressure_filter_valid ? g_pressure_filtered : 0.0f;
+    if (g_pressure_fault_attempts != 0U &&
+        (int32_t)(HAL_GetTick() - g_pressure_fault_next_ms) < 0) {
+        return APP_FAULT_NONE;
+    }
+    fault = pressure_step_once(target_mmhg, measured_mmhg);
+    if (fault == APP_FAULT_PRESSURE_SENSOR || fault == APP_FAULT_PRESSURE_COMM) {
+        /* Inhibit motion while pressure is unknown; never keep an old speed
+         * running during confirmation. Preserve the operation being retried. */
+        Tmc5130Driver_Stop();
+        g_pressure_command = 0.0f;
+        pressure_control_reset();
+        g_ads_sample_valid = false;
+        g_pressure_fault_attempts++;
+        LOGW("[Pressure] Fault confirmation code=0x%04X attempt=%u/%u",
+             (unsigned)fault, (unsigned)g_pressure_fault_attempts,
+             (unsigned)APP_PRESSURE_FAULT_CONFIRM_TRIES);
+        if (g_pressure_fault_attempts >= APP_PRESSURE_FAULT_CONFIRM_TRIES) {
+            return fault;
+        }
+        g_pressure_active = was_active;
+        g_pressure_recovering = was_recovering;
+        /* Every retry must pass diagnostics, including restoration of normal
+         * ADC configuration, before using a fresh pressure sample. */
+        g_pressure_last_sensor_check_ms = HAL_GetTick() - APP_PRESSURE_SENSOR_CHECK_MS;
+        g_pressure_fault_next_ms = HAL_GetTick() + APP_PRESSURE_FAULT_RETRY_MS;
+        return APP_FAULT_NONE;
+    }
+    if (fault == APP_FAULT_NONE && g_pressure_fault_attempts != 0U &&
+        !g_pressure_recovering && g_pressure_active && g_ads_sample_valid &&
+        g_ads_last_unfiltered_pressure_x10 < (int32_t)(APP_MAX_SAFE_PRESSURE_MMHG * 10.0f)) {
+        /* The normal control step has already rebuilt the speed command
+         * using fresh pressure while the output bridge was disabled. */
+        g_pressure_fault_attempts = 0U;
+        Tmc5130Driver_Enable(true);
+        LOGI("[Pressure] Fault confirmation cleared; pressure control resumed");
+    }
+    return fault;
+}
+
 static AppFault pressure_begin_recovery(const char *reason)
 {
     Tmc5130Driver_Enable(false);
@@ -915,6 +967,7 @@ bool TreatmentHw_PressureTelemetry(int32_t *raw, float *pressure_mmhg,
 
 void TreatmentHw_PressureStop(void)
 {
+    g_pressure_fault_attempts = 0U;
     g_pressure_active = false;
     g_pressure_recovering = false;
     g_pressure_command = 0.0f;

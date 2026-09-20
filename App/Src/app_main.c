@@ -46,6 +46,7 @@ void AppMain_Task(void *argument)
 {
     uint8_t serial_data[128];
     uint32_t last_eye_ms = 0U;
+    uint32_t eye_poll_period_ms = APP_EYE_POLL_PERIOD_MS;
     uint32_t last_power_ms = 0U;
     bool external_power_seen = false;
     bool previous_external_power = false;
@@ -84,9 +85,16 @@ void AppMain_Task(void *argument)
         if (Board_TakeButtonEvent()) {
             handle_button();
         }
-        if (now - last_eye_ms >= APP_EYE_POLL_PERIOD_MS) {
+        if (now - last_eye_ms >= eye_poll_period_ms) {
             last_eye_ms = now;
             AppEyeState eye = Board_AppPort()->eye_read_state();
+            /* Slow only confirmed, healthy presence polling. Keep insertion
+             * confirmation and reconnect checks at the original cadence. */
+            eye_poll_period_ms = EyeDriver_InitialStateConfirmed() &&
+                                 EyeDriver_LastProbeValid() &&
+                                 eye != APP_EYE_ABSENT ?
+                                 APP_EYE_ONLINE_POLL_PERIOD_MS :
+                                 APP_EYE_POLL_PERIOD_MS;
             if (EyeDriver_InitialStateConfirmed()) {
                 AppController_SetEyeLinkHealthy(EyeDriver_LastProbeValid());
                 AppController_SetEyeState(eye);

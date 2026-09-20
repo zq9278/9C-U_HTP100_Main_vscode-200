@@ -24,6 +24,8 @@ static uint32_t g_candidate_started_ms;
 static uint8_t g_startup_absent_samples;
 static bool g_initial_state_confirmed;
 static bool g_last_probe_valid;
+static bool g_identity_valid;
+static AppEyeState g_identity_state;
 
 static bool i2c2_needs_recovery(HAL_StatusTypeDef status, uint32_t error)
 {
@@ -127,7 +129,26 @@ static bool eye_read_u16(uint8_t address, uint16_t *value)
     return true;
 }
 
-static bool eye_read_raw_state(AppEyeState *state)
+static bool eye_probe_presence(void)
+{
+    for (uint8_t attempt = 0U; attempt < 2U; ++attempt) {
+        HAL_StatusTypeDef status = HAL_I2C_IsDeviceReady(
+            &hi2c2, EYE_EEPROM_ADDRESS, 1U, 20U);
+        if (status == HAL_OK) {
+            return true;
+        }
+        if (i2c2_needs_recovery(status, HAL_I2C_GetError(&hi2c2)) &&
+            !i2c2_recover(status, HAL_I2C_GetError(&hi2c2))) {
+            return false;
+        }
+        if (attempt == 0U) {
+            vTaskDelay(pdMS_TO_TICKS(2U));
+        }
+    }
+    return false;
+}
+
+static bool eye_read_identity(AppEyeState *state)
 {
 #if PRODUCT_EYE_FUSE_ENABLED
     uint16_t marker;
@@ -160,6 +181,8 @@ void EyeDriver_Init(void)
     g_startup_absent_samples = 0U;
     g_initial_state_confirmed = false;
     g_last_probe_valid = false;
+    g_identity_valid = false;
+    g_identity_state = APP_EYE_ABSENT;
     eye_restart_debounce();
 }
 
@@ -193,9 +216,23 @@ bool EyeDriver_ReadTemperatureTelemetry(float *temperature_c)
 AppEyeState EyeDriver_ReadState(void)
 {
     AppEyeState sample = APP_EYE_ABSENT;
-    bool read_valid = eye_read_raw_state(&sample);
+    bool read_valid = eye_probe_presence();
     bool state_confirmed = false;
 
+    /* Cache identity for this insertion session. Normal polling sends only
+     * the EEPROM address; it does not reread service/consumption markers. */
+    if (read_valid) {
+        if (!g_identity_valid) {
+            read_valid = eye_read_identity(&g_identity_state);
+            g_identity_valid = read_valid;
+        }
+        if (read_valid) {
+            sample = g_identity_state;
+        }
+    } else if (g_stable_state == APP_EYE_ABSENT) {
+        /* A failed insertion probe must not reuse an unconfirmed identity. */
+        g_identity_valid = false;
+    }
     g_last_probe_valid = read_valid;
 
     /* At power-up a not-yet-ready eye EEPROM is electrically identical to a
@@ -245,6 +282,9 @@ AppEyeState EyeDriver_ReadState(void)
              (unsigned long)(HAL_GetTick() - g_candidate_started_ms),
              (unsigned)g_candidate_samples);
         g_stable_state = sample;
+        if (sample == APP_EYE_ABSENT) {
+            g_identity_valid = false;
+        }
         g_candidate_samples = 0U;
         g_candidate_started_ms = 0U;
         g_initial_state_confirmed = true;
@@ -281,6 +321,8 @@ bool EyeDriver_MarkConsumed(void)
         return false;
     }
     g_stable_state = APP_EYE_CONSUMED;
+    g_identity_state = APP_EYE_CONSUMED;
+    g_identity_valid = true;
     g_candidate_state = APP_EYE_CONSUMED;
     g_candidate_samples = 0U;
 #endif
@@ -291,6 +333,9 @@ void EyeDriver_Erase(void)
 {
     uint8_t value = 0xFFU;
 
+    /* Explicit EEPROM editing requires a fresh identity read afterwards. */
+    g_identity_valid = false;
+    eye_restart_debounce();
     for (uint16_t address = 0U; address < 256U; ++address) {
         if (i2c2_mem_write(EYE_EEPROM_ADDRESS, (uint8_t)address,
                            &value, 1U, 80U) != HAL_OK) {

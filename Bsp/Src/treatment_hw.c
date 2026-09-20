@@ -18,7 +18,7 @@ typedef enum {
     PRESS_STAGE_RETRACT
 } PressureStage;
 
-#define PRESSURE_FILTER_ALPHA          0.35f
+#define PRESSURE_FILTER_ALPHA          0.20f
 #define PRESSURE_CONTROL_DEADBAND      3.0f
 #define PRESSURE_CONTROL_MAX_SPEED     8000.0f
 #define PRESSURE_CONTROL_MAX_I_OUTPUT  2000.0f

@@ -70,3 +70,4 @@
 - No application task is dynamically deleted, suspended, or resumed.
 - A treatment cannot start unless home and the unloaded ADS1220 zero are valid.
 - Temperature >= 44 C and pressure >= 650 mmHg independently stop treatment and latch a fault.
+- During heat/auto preheat or treatment, a successfully read raw temperature <= 0 C immediately disables outputs before PID, stops treatment and reports the existing TMP112 fault 0x0101 (no communication-failure confirmation delay). The sample is invalid for display/control. Normal fault homing and TMP112 fault recovery rules apply; recovery does not automatically restart treatment. This threshold applies before LCD compensation, not to the displayed temperature.

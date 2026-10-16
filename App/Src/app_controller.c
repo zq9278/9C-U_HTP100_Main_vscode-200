@@ -722,6 +722,15 @@ static void tick_heat(uint32_t now)
         }
         return;
     }
+    if (measured <= 0.0f) {
+        g_app.status.temperature_valid = false;
+        g_app.temp_comm_failure_timing = false;
+        LOGE("[Temp] Invalid nonpositive sample measured_x100=%ld; stopping treatment",
+             (long)(measured * 100.0f));
+        safe_outputs_off();
+        AppController_RaiseFault(APP_FAULT_TMP112_COMM);
+        return;
+    }
     if (g_app.temp_comm_failure_timing) {
         LOGI("[Temp] Communication recovered; confirmation cancelled");
     }

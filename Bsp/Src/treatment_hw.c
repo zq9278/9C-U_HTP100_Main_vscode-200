@@ -276,6 +276,13 @@ bool TreatmentHw_HeaterControl(float target_c, float *measured_c)
          * bounded temperature-communication confirmation window. */
         return false;
     }
+    if (*measured_c <= 0.0f) {
+        /* A completed I2C transfer does not guarantee a usable measurement.
+         * Shut down before PID can turn a zero sample into full heater power.
+         * Return the received sample so the controller faults immediately. */
+        TreatmentHw_SafeOutputsOff();
+        return true;
+    }
     error = target_c - *measured_c;
     /* Temporarily disabled for PID tuning: reaching the target must not
      * discard the holding-power integral and force PWM to zero.

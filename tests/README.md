@@ -2,6 +2,9 @@
 
 `test_app_controller.c` tests the application state machine without STM32 HAL:
 
+- a successful nonpositive temperature sample immediately disables outputs,
+  stops heat/auto treatment in preheat or running, reports 0x0101 and remains
+  faulted after homing; the first positive sensor step is still accepted;
 - preheating does not consume a new eye shield;
 - formal treatment consumes it exactly once;
 - the same uninterrupted insertion session can start another treatment;

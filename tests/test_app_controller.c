@@ -15,6 +15,9 @@ static uint32_t fake_now;
 static AppAsyncResult fake_home_result;
 static AppEyeState fake_eye;
 static bool fake_heat_ok;
+static bool fake_heat_override;
+static float fake_heat_measured;
+static unsigned outputs_off_count;
 static AppFault fake_pressure_fault;
 static AppFault fake_zero_fault;
 static unsigned home_begin_count;
@@ -37,11 +40,11 @@ static float last_temperature_screen_value;
 static AppLedState last_led;
 
 static uint32_t now_ms(void) { return fake_now; }
-static void outputs_off(void) { }
+static void outputs_off(void) { outputs_off_count++; }
 static bool heat(float target, float *measured)
 {
     last_heat_target = target;
-    *measured = target;
+    *measured = fake_heat_override ? fake_heat_measured : target;
     return fake_heat_ok;
 }
 static bool pressure_start(float target) { (void)target; pressure_start_count++; return true; }
@@ -100,6 +103,9 @@ static void reset_fixture(void)
     fake_home_result = APP_ASYNC_BUSY;
     fake_eye = APP_EYE_NEW;
     fake_heat_ok = true;
+    fake_heat_override = false;
+    fake_heat_measured = 0.0f;
+    outputs_off_count = 0U;
     fake_pressure_fault = APP_FAULT_NONE;
     fake_zero_fault = APP_FAULT_NONE;
     home_begin_count = home_poll_count = home_cancel_count = eye_consume_count = 0U;
@@ -238,6 +244,47 @@ static void test_temperature_failure_raises_0101_only_while_eye_online(void)
     assert(AppController_Status()->eye == APP_EYE_NEW);
     assert(AppController_Status()->fault == APP_FAULT_TMP112_COMM);
     assert(immediate_fault_count == 1U);
+}
+
+static void test_nonpositive_temperature_stops_immediately(void)
+{
+    const float samples[] = {0.0f, -0.0625f, -10.0f};
+    const AppMode modes[] = {APP_MODE_HEAT, APP_MODE_AUTO};
+    for (unsigned m = 0U; m < sizeof(modes) / sizeof(modes[0]); ++m) {
+        for (unsigned running = 0U; running < 2U; ++running) {
+            for (unsigned s = 0U; s < sizeof(samples) / sizeof(samples[0]); ++s) {
+                reset_fixture();
+                assert(AppController_Prepare(modes[m], 350.0f));
+                if (running) assert(AppController_Start());
+                fake_home_result = APP_ASYNC_BUSY;
+                unsigned off_before = outputs_off_count;
+                fake_heat_override = true;
+                fake_heat_measured = samples[s];
+                fake_now = APP_HEAT_CONTROL_PERIOD_MS;
+                AppController_Tick();
+                assert(outputs_off_count > off_before);
+                assert(AppController_Status()->state == APP_STATE_HOMING);
+                assert(AppController_Status()->stop_reason == APP_STOP_FAULT);
+                assert(AppController_Status()->fault == APP_FAULT_TMP112_COMM);
+                assert(!AppController_Status()->temperature_valid);
+                assert(immediate_fault_count == 1U);
+                assert(temperature_screen_count == 0U);
+                assert(treatment_count == 0U);
+                fake_home_result = APP_ASYNC_OK;
+                AppController_Tick();
+                assert(AppController_Status()->state == APP_STATE_FAULT);
+                assert(!AppController_Start());
+            }
+        }
+    }
+    reset_fixture();
+    assert(AppController_Prepare(APP_MODE_HEAT, 0.0f));
+    fake_heat_override = true;
+    fake_heat_measured = 0.0625f;
+    fake_now = APP_HEAT_CONTROL_PERIOD_MS;
+    AppController_Tick();
+    assert(AppController_Status()->fault == APP_FAULT_NONE);
+    assert(AppController_Status()->temperature_valid);
 }
 
 static void test_only_natural_finish_counts(void)
@@ -409,6 +456,7 @@ static void test_fault_stop_cannot_quick_resume(void)
 
 int main(void)
 {
+    test_nonpositive_temperature_stops_immediately();
     test_eye_is_consumed_only_at_formal_start();
     test_reinserted_consumed_eye_is_rejected();
     test_eye_offline_state_is_repeated_to_screen();

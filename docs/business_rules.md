@@ -56,11 +56,26 @@
 
 - Any valid external input reported by BQ25895, including charge-done, blocks treatment.
 - Inserting charging power during preparation or treatment aborts and homes the mechanism.
-- The current low-battery warning threshold is retained: BQ27441 SOC <= 1%.
+- Low-battery warning is raised when BQ27441 SOC is below 10%.
 - Warning is shown by flashing WS2812 LEDs.
-- The current shutdown threshold is retained: voltage <= 3150 mV for five consecutive
-  one-second checks while external power is absent.
+- While formal treatment is RUNNING, low-voltage samples do not stop treatment
+  or request automatic shutdown; the confirmation count is reset on each poll.
+  Low-battery indications remain active.
+- Outside RUNNING (including preheat, idle and homing), voltage <= 3150 mV for
+  five consecutive power checks requests shutdown while external power is absent.
+  Checks are scheduled every 100 ms; device I/O can lengthen the actual interval.
+  After treatment stops, confirmation starts afresh. A real power-loss input,
+  external-power interlock and fault stops remain active during treatment.
 - Critical shutdown first attempts home, then writes BQ25895 register `0x09 = 0x64`.
+
+## Trigger button
+
+- A press must remain stable for at least 30 ms before producing one action.
+- Holding the trigger does not repeat. A stable release of at least 30 ms is
+  required before another press can act; falling edges during press confirmation
+  restart that confirmation to reject bounce between main-loop polls.
+- Debouncing is nonblocking and runs in the application task. Interrupts only
+  record an edge hint; physical pin levels and elapsed time determine events.
 
 ## Safety ownership
 

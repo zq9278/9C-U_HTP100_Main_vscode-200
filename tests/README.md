@@ -2,6 +2,9 @@
 
 `test_app_controller.c` tests the application state machine without STM32 HAL:
 
+- low voltage does not interrupt RUNNING heat/pressure/auto treatment; stop
+  restarts low-voltage confirmation, while idle/preheat shutdown and actual
+  power-loss handling remain active;
 - preheating does not consume a new eye shield;
 - formal treatment consumes it exactly once;
 - the same uninterrupted insertion session can start another treatment;
@@ -20,3 +23,7 @@
 The firmware build compiles the same `App/Src/app_controller.c`. A native C compiler
 can run this test by compiling the test together with that source and including
 `App/Inc`.
+
+`test_button_debounce.c` compiles with `App/Src/button_debounce.c` and `App/Inc`.
+It covers press/release bounce, held-button suppression, rearming, edges missed
+between polls, short pulses and millisecond-counter rollover.

@@ -5,6 +5,7 @@
 #include "app_config.h"
 #include "app_controller.h"
 #include "app_log.h"
+#include "button_debounce.h"
 #include "charger_driver.h"
 #include "eye_driver.h"
 #include "main.h"
@@ -19,6 +20,7 @@
 #define BOARD_ADS_RETRY_PERIOD_MS 2000U
 
 static volatile bool g_button_event;
+static ButtonDebounce g_button_debounce;
 static volatile bool g_power_loss_event;
 static bool g_ads_ready;
 static uint32_t g_ads_last_retry_ms;
@@ -214,13 +216,15 @@ size_t Board_ScreenRead(uint8_t *destination, size_t capacity)
 
 bool Board_TakeButtonEvent(void)
 {
-    bool value;
+    bool falling_edge;
 
     taskENTER_CRITICAL();
-    value = g_button_event;
+    falling_edge = g_button_event;
     g_button_event = false;
     taskEXIT_CRITICAL();
-    return value;
+    return ButtonDebounce_Update(&g_button_debounce,
+        HAL_GPIO_ReadPin(SW_CNT_GPIO_Port, SW_CNT_Pin) == GPIO_PIN_RESET,
+        falling_edge, HAL_GetTick());
 }
 
 bool Board_TakePowerLossEvent(void)

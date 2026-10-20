@@ -313,6 +313,82 @@ static void test_low_voltage_homes_then_cuts_power(void)
     assert(AppController_Status()->state == APP_STATE_SHUTDOWN);
 }
 
+static void test_low_voltage_during_treatment_waits_until_stop(void)
+{
+    const AppMode modes[] = {APP_MODE_HEAT, APP_MODE_PRESSURE, APP_MODE_AUTO};
+    const AppStopReason stops[] = {APP_STOP_USER, APP_STOP_NATURAL};
+    for (unsigned m = 0U; m < sizeof(modes) / sizeof(modes[0]); ++m) {
+        for (unsigned s = 0U; s < sizeof(stops) / sizeof(stops[0]); ++s) {
+            reset_fixture();
+            assert(AppController_Prepare(modes[m], 350.0f));
+            /* A partial pre-start confirmation must not survive treatment. */
+            for (unsigned i = 0U; i < APP_LOW_BATTERY_CONFIRM_SAMPLES - 1U; ++i) {
+                AppController_SetPower(false, false, 1U, 3100U);
+            }
+            assert(AppController_Start());
+            for (unsigned i = 0U; i < APP_LOW_BATTERY_CONFIRM_SAMPLES * 2U; ++i) {
+                AppController_SetPower(false, false, 1U, 3100U);
+            }
+            assert(AppController_Status()->state == APP_STATE_RUNNING);
+            assert(AppController_Status()->low_battery_warning);
+            assert(power_off_count == 0U);
+            AppController_Stop(stops[s]);
+            fake_home_result = APP_ASYNC_BUSY;
+            for (unsigned i = 0U; i < APP_LOW_BATTERY_CONFIRM_SAMPLES - 1U; ++i) {
+                AppController_SetPower(false, false, 1U, 3100U);
+            }
+            assert(AppController_Status()->stop_reason == stops[s]);
+            AppController_SetPower(false, false, 1U, 3100U);
+            assert(AppController_Status()->stop_reason == APP_STOP_LOW_BATTERY);
+            fake_home_result = APP_ASYNC_OK;
+            AppController_Tick();
+            assert(power_off_count == 1U);
+            assert(AppController_Status()->state == APP_STATE_SHUTDOWN);
+        }
+    }
+}
+
+static void test_preheat_low_voltage_still_shuts_down(void)
+{
+    reset_fixture();
+    assert(AppController_Prepare(APP_MODE_HEAT, 0.0f));
+    for (unsigned i = 0U; i < APP_LOW_BATTERY_CONFIRM_SAMPLES; ++i) {
+        AppController_SetPower(false, false, 1U, 3100U);
+    }
+    assert(AppController_Status()->stop_reason == APP_STOP_LOW_BATTERY);
+    AppController_Tick();
+    assert(AppController_Status()->state == APP_STATE_SHUTDOWN);
+    assert(power_off_count == 1U);
+}
+
+static void test_low_voltage_recovery_does_not_leave_pending_shutdown(void)
+{
+    reset_fixture();
+    assert(AppController_Prepare(APP_MODE_AUTO, 350.0f));
+    assert(AppController_Start());
+    for (unsigned i = 0U; i < APP_LOW_BATTERY_CONFIRM_SAMPLES * 2U; ++i) {
+        AppController_SetPower(false, false, 1U, 3100U);
+    }
+    AppController_SetPower(false, false, 20U, 3700U);
+    AppController_Stop(APP_STOP_USER);
+    AppController_Tick();
+    assert(AppController_Status()->state == APP_STATE_IDLE);
+    assert(power_off_count == 0U);
+}
+
+static void test_power_loss_still_interrupts_running_treatment(void)
+{
+    reset_fixture();
+    assert(AppController_Prepare(APP_MODE_AUTO, 350.0f));
+    assert(AppController_Start());
+    AppController_NotifyPowerLoss();
+    assert(AppController_Status()->state == APP_STATE_HOMING);
+    assert(AppController_Status()->stop_reason == APP_STOP_POWER_LOSS);
+    AppController_Tick();
+    assert(AppController_Status()->state == APP_STATE_SHUTDOWN);
+    assert(power_off_count == 1U);
+}
+
 static void test_fault_and_power_loss_always_home(void)
 {
     reset_fixture();
@@ -420,6 +496,10 @@ int main(void)
     test_charging_blocks_and_interrupts_treatment();
     test_charge_done_uses_full_led();
     test_low_voltage_homes_then_cuts_power();
+    test_low_voltage_during_treatment_waits_until_stop();
+    test_preheat_low_voltage_still_shuts_down();
+    test_low_voltage_recovery_does_not_leave_pending_shutdown();
+    test_power_loss_still_interrupts_running_treatment();
     test_fault_and_power_loss_always_home();
     test_pressure_control_preserves_hardware_fault_type();
     test_pressure_zero_reports_sensor_fault();

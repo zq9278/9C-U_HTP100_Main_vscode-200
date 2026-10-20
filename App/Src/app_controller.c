@@ -472,6 +472,11 @@ void AppController_SetPower(bool charging, bool full, uint16_t soc, uint16_t mil
         if (treatment_is_open() && !g_app.debug_mode) {
             AppController_Stop(APP_STOP_CHARGING);
         }
+    } else if (g_app.status.state == APP_STATE_RUNNING) {
+        /* Do not interrupt formal treatment for a low-voltage reading.
+         * Discard confirmations accumulated under load; after treatment,
+         * require the usual consecutive low-voltage samples before shutdown. */
+        g_app.low_voltage_samples = 0U;
     } else if (millivolts != 0U && millivolts <= APP_LOW_BATTERY_SHUTDOWN_MV) {
         if (g_app.low_voltage_samples < APP_LOW_BATTERY_CONFIRM_SAMPLES) {
             g_app.low_voltage_samples++;

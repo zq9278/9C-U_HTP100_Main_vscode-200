@@ -6,6 +6,7 @@
 #include "app_types.h"
 
 void EyeDriver_Init(void);
+void EyeDriver_DiagnosticsTick(void);
 bool EyeDriver_ReadTemperature(float *temperature_c);
 bool EyeDriver_ReadTemperatureTelemetry(float *temperature_c);
 AppEyeState EyeDriver_ReadState(void);

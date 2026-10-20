@@ -26,6 +26,12 @@ static bool g_initial_state_confirmed;
 static bool g_last_probe_valid;
 static bool g_identity_valid;
 static AppEyeState g_identity_state;
+static uint32_t g_temp_sample_ms;
+static bool g_temp_sample_seen;
+static HAL_StatusTypeDef g_temp_sample_status;
+static uint8_t g_temp_sample_bytes[2];
+static uint32_t g_diag_last_ms;
+static bool g_diag_started;
 
 static bool i2c2_needs_recovery(HAL_StatusTypeDef status, uint32_t error)
 {
@@ -72,6 +78,18 @@ static HAL_StatusTypeDef i2c2_mem_read(uint16_t device, uint16_t address,
     for (uint8_t attempt = 0U; attempt < 2U; ++attempt) {
         status = HAL_I2C_Mem_Read(&hi2c2, device, address, I2C_MEMADD_SIZE_8BIT,
                                   data, size, timeout);
+        if (device == TMP112_ADDRESS) {
+            uint32_t error = HAL_I2C_GetError(&hi2c2);
+            if (status == HAL_OK && size == 2U) {
+                LOGI("[TMP112 READ] reg=0x%02X attempt=%u status=%u err=0x%08lX raw=%02X %02X",
+                     (unsigned)address, (unsigned)(attempt + 1U), (unsigned)status,
+                     (unsigned long)error, (unsigned)data[0], (unsigned)data[1]);
+            } else {
+                LOGW("[TMP112 READ] reg=0x%02X attempt=%u status=%u err=0x%08lX raw=INVALID",
+                     (unsigned)address, (unsigned)(attempt + 1U), (unsigned)status,
+                     (unsigned long)error);
+            }
+        }
         if (status == HAL_OK) {
             return HAL_OK;
         }
@@ -81,6 +99,22 @@ static HAL_StatusTypeDef i2c2_mem_read(uint16_t device, uint16_t address,
         }
         if (attempt == 0U) {
             vTaskDelay(pdMS_TO_TICKS(2U));
+        }
+    }
+    return status;
+}
+
+/* All TMP112 callers use the same timeout, retries and bus recovery policy. */
+static HAL_StatusTypeDef tmp112_read_register(uint8_t reg, uint8_t data[2])
+{
+    HAL_StatusTypeDef status = i2c2_mem_read(TMP112_ADDRESS, reg, data, 2U, 50U);
+    if (reg == 0U) {
+        g_temp_sample_ms = HAL_GetTick();
+        g_temp_sample_seen = true;
+        g_temp_sample_status = status;
+        if (status == HAL_OK) {
+            g_temp_sample_bytes[0] = data[0];
+            g_temp_sample_bytes[1] = data[1];
         }
     }
     return status;
@@ -176,6 +210,10 @@ static bool eye_read_identity(AppEyeState *state)
 
 void EyeDriver_Init(void)
 {
+    g_temp_sample_seen = false;
+    g_diag_started = false;
+    g_diag_last_ms = 0U;
+    LOGW("[TMP112 DIAG] UNIFIED READ BENCH BUILD; no <=0C shutdown protection");
     g_recovery_count = 0U;
     g_stable_state = APP_EYE_ABSENT;
     g_startup_absent_samples = 0U;
@@ -192,7 +230,7 @@ static bool eye_read_temperature(float *temperature_c)
     int16_t raw;
 
     if (temperature_c == NULL ||
-        i2c2_mem_read(TMP112_ADDRESS, 0x00U, data, sizeof(data), 50U) != HAL_OK) {
+        tmp112_read_register(0x00U, data) != HAL_OK) {
         return false;
     }
     raw = (int16_t)(((uint16_t)data[0] << 8U) | data[1]);
@@ -211,6 +249,34 @@ bool EyeDriver_ReadTemperature(float *temperature_c)
 bool EyeDriver_ReadTemperatureTelemetry(float *temperature_c)
 {
     return eye_read_temperature(temperature_c);
+}
+
+void EyeDriver_DiagnosticsTick(void)
+{
+    uint32_t now = HAL_GetTick();
+    uint8_t data[2];
+    if (g_diag_started && now - g_diag_last_ms < 1000U) {
+        return;
+    }
+    g_diag_started = true;
+    g_diag_last_ms = now;
+    /* Reuse the latest control/telemetry attempt, including failures. Only
+     * sample independently when control/telemetry has not read recently. */
+    if (!g_temp_sample_seen || now - g_temp_sample_ms >= 500U) {
+        (void)tmp112_read_register(0U, data);
+    }
+    LOGI("[TMP112 DIAG] eeprom_probe_ok=%u TEMP sample_ms=%lu age_ms=%lu status=%u",
+         (unsigned)g_last_probe_valid, (unsigned long)g_temp_sample_ms,
+         (unsigned long)(HAL_GetTick() - g_temp_sample_ms), (unsigned)g_temp_sample_status);
+    if (g_temp_sample_status == HAL_OK) {
+        LOGI("[TMP112 DIAG] TEMP raw=%02X %02X (cached shared sample)",
+             (unsigned)g_temp_sample_bytes[0], (unsigned)g_temp_sample_bytes[1]);
+    } else {
+        LOGW("[TMP112 DIAG] TEMP raw=INVALID (cached shared attempt)");
+    }
+    for (uint8_t reg = 1U; reg < 4U; ++reg) {
+        (void)tmp112_read_register(reg, data);
+    }
 }
 
 AppEyeState EyeDriver_ReadState(void)

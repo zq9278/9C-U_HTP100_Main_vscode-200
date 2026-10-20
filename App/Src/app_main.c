@@ -127,6 +127,7 @@ void AppMain_Task(void *argument)
         AppController_Tick();
         TuningProtocol_Tick();
         Board_Tick();
+        EyeDriver_DiagnosticsTick();
         vTaskDelay(pdMS_TO_TICKS(10U));
     }
 }

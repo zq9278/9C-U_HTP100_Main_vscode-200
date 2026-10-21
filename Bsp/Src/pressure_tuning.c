@@ -7,6 +7,10 @@
 #include "storage_driver.h"
 
 #define TUNING_STORAGE_ADDRESS       0x20U
+/* Temporary tuning switch: 1 uses the code table directly for control and
+ * queries, and rejects host profile writes/saves. Set to 0 to restore
+ * EEPROM loading and normal RAM/host tuning. */
+#define TUNING_USE_CODE_DEFAULTS     1U
 #define TUNING_STORAGE_MAGIC_0       0x50U
 #define TUNING_STORAGE_MAGIC_1       0x54U
 #define TUNING_STORAGE_VERSION       8U
@@ -21,10 +25,10 @@
 /* Used whenever external storage is blank, corrupt or has another version. */
 static const PressureTuningProfile g_defaults[PRESSURE_TUNING_PROFILE_COUNT] = {
     {0.380f, 0.0f, 20000.0f, 6000.0f, 15000.0f, 30.0f, 50.0f, 500U, 50.0f, 0.0f},
-    {0.370f, 0.0f, 30000.0f, 9000.0f, 18000.0f, 90.0f, 92.0f, 600U, 150.0f, 0.0f},
-    {0.370f, 0.0f, 40000.0f, 9000.0f, 20000.0f, 65.0f, 70.0f, 800U, 150.0f, 0.0f},
-    {0.370f, 0.0f, 45000.0f, 9000.0f, 20000.0f, 55.0f, 60.0f, 800U, 100.0f, 0.0f},
-    {0.370f, 0.0f, 45000.0f, 9000.0f, 20000.0f, 50.0f, 50.0f, 1000U, 100.0f, 0.0f}
+    {0.370f, 0.0f, 30000.0f, 9000.0f, 30000.0f, 50.0f, 92.0f, 600U, 600.0f, 0.0f},
+    {0.370f, 0.0f, 40000.0f, 9000.0f, 30000.0f, 65.0f, 70.0f, 500U, 150.0f, 0.0f},
+    {0.370f, 0.0f, 45000.0f, 9000.0f, 30000.0f, 55.0f, 60.0f, 500U, 150.0f, 0.0f},
+    {0.370f, 0.0f, 45000.0f, 9000.0f, 30000.0f, 50.0f, 50.0f, 800U, 150.0f, 0.0f}
 };
 
 static PressureTuningProfile g_profiles[PRESSURE_TUNING_PROFILE_COUNT];
@@ -143,6 +147,10 @@ void PressureTuning_ResetDefaults(void)
 void PressureTuning_Init(void)
 {
     PressureTuning_ResetDefaults();
+    if (TUNING_USE_CODE_DEFAULTS != 0U) {
+        LOGW("[Tuning] DEBUG: CODE TABLE LOCKED; EEPROM/host profile overrides disabled");
+        return;
+    }
     if (load_saved_profiles()) {
         LOGI("[Tuning] Pressure profiles loaded from external EEPROM");
     } else {
@@ -152,11 +160,13 @@ void PressureTuning_Init(void)
 
 const PressureTuningProfile *PressureTuning_ProfileForTarget(float target_mmhg)
 {
-    if (target_mmhg <= 200.0f) return &g_profiles[0];
-    if (target_mmhg <= 300.0f) return &g_profiles[1];
-    if (target_mmhg <= 400.0f) return &g_profiles[2];
-    if (target_mmhg <= 500.0f) return &g_profiles[3];
-    return &g_profiles[4];
+    const PressureTuningProfile *profiles =
+        TUNING_USE_CODE_DEFAULTS != 0U ? g_defaults : g_profiles;
+    if (target_mmhg <= 200.0f) return &profiles[0];
+    if (target_mmhg <= 300.0f) return &profiles[1];
+    if (target_mmhg <= 400.0f) return &profiles[2];
+    if (target_mmhg <= 500.0f) return &profiles[3];
+    return &profiles[4];
 }
 
 bool PressureTuning_Get(uint8_t index, PressureTuningProfile *profile)
@@ -164,12 +174,16 @@ bool PressureTuning_Get(uint8_t index, PressureTuningProfile *profile)
     if (index >= PRESSURE_TUNING_PROFILE_COUNT || profile == NULL) {
         return false;
     }
-    *profile = g_profiles[index];
+    *profile = TUNING_USE_CODE_DEFAULTS != 0U ? g_defaults[index] : g_profiles[index];
     return true;
 }
 
 bool PressureTuning_Set(uint8_t index, const PressureTuningProfile *profile)
 {
+    if (TUNING_USE_CODE_DEFAULTS != 0U) {
+        LOGW("[Tuning] Host profile update rejected: CODE TABLE LOCKED");
+        return false;
+    }
     if (index >= PRESSURE_TUNING_PROFILE_COUNT || !profile_valid(profile)) {
         return false;
     }
@@ -179,6 +193,10 @@ bool PressureTuning_Set(uint8_t index, const PressureTuningProfile *profile)
 
 bool PressureTuning_Save(void)
 {
+    if (TUNING_USE_CODE_DEFAULTS != 0U) {
+        LOGW("[Tuning] Profile save rejected: CODE TABLE LOCKED");
+        return false;
+    }
     uint8_t record[TUNING_STORAGE_TOTAL_BYTES] = {0U};
     uint8_t verify[TUNING_STORAGE_TOTAL_BYTES];
     const uint8_t invalid_magic[2] = {0U, 0U};

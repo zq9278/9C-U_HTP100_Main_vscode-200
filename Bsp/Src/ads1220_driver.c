@@ -112,7 +112,7 @@ static bool ads_init_attempt(uint8_t attempt)
         return false;
     }
     g_ready = true;
-    LOGI("[ADS1220] Initialized and registers verified: attempt=%u",
+    LOG_PRESSURE_DIAG("[ADS1220] Initialized and registers verified: attempt=%u",
          (unsigned)attempt);
     return true;
 }
@@ -245,7 +245,7 @@ Ads1220Result Ads1220Driver_ZeroCalibrate(void)
         g_zero_valid = false;
         return sensor_result;
     }
-    LOGI("[ADS1220] Sensor diagnostic passed: bcs_raw=%ld limits=%ld..%ld",
+    LOG_PRESSURE_DIAG("[ADS1220] Sensor diagnostic passed: bcs_raw=%ld limits=%ld..%ld",
          (long)g_sensor_diagnostic_raw,
          (long)APP_PRESSURE_SHORT_RAW_LIMIT,
          (long)APP_PRESSURE_OPEN_RAW_LIMIT);
@@ -277,7 +277,7 @@ Ads1220Result Ads1220Driver_ZeroCalibrate(void)
     }
     g_zero_raw = (int32_t)(sum / 24);
     g_zero_valid = true;
-    LOGI("[ADS1220] Zero calibrated: raw=%ld low=%ld high=%ld",
+    LOG_PRESSURE_DIAG("[ADS1220] Zero calibrated: raw=%ld low=%ld high=%ld",
          (long)g_zero_raw, (long)samples[4], (long)samples[27]);
     return ADS1220_RESULT_OK;
 }

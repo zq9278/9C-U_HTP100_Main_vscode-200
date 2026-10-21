@@ -597,6 +597,7 @@ void TreatmentHw_HomeCancel(void)
 
 bool TreatmentHw_PressureStart(float target_mmhg)
 {
+    const PressureTuningProfile *profile = PressureTuning_ProfileForTarget(target_mmhg);
     g_pressure_fault_attempts = 0U;
     if (!Ads1220Driver_ZeroValid()) {
         return false;
@@ -618,8 +619,12 @@ bool TreatmentHw_PressureStart(float target_mmhg)
     pressure_filter_reset();
     g_ads_sample_valid = false;
     g_pressure_active = true;
-    LOGI("[Pressure] Start target=%ldmmHg stage=fast",
+    LOG_PRESSURE_DIAG("[Pressure] Start target=%ldmmHg stage=fast",
          (long)target_mmhg);
+    LOG_PRESSURE_DIAG("[Pressure] Active profile kp_x10=%ld ki_x10=%ld approach=%ld retract_speed=%ld retract_ms=%lu",
+         (long)(profile->kp * 10.0f), (long)(profile->ki * 10.0f),
+         (long)profile->approach_speed, (long)profile->retract_speed,
+         (unsigned long)profile->retract_ms);
     return true;
 }
 
@@ -710,9 +715,10 @@ static AppFault pressure_step_once(float target_mmhg, float *measured_mmhg)
     }
     *measured_mmhg = pressure_filter_update(unfiltered_pressure);
     g_ads_last_pressure_x10 = (int32_t)(*measured_mmhg * 10.0f);
-    if (now - g_ads_last_log_ms >= APP_SENSOR_LOG_PERIOD_MS) {
+    if (APP_ENABLE_PRESSURE_DIAGNOSTIC_LOG != 0U &&
+        now - g_ads_last_log_ms >= APP_SENSOR_LOG_PERIOD_MS) {
         int32_t pressure_x10 = (int32_t)(*measured_mmhg * 10.0f);
-        LOGI("[ADS1220] raw=%ld zero=%ld pressure=%ld.%01ldmmHg target=%ld stage=%u speed=%ld",
+        LOG_PRESSURE_DIAG("[ADS1220] raw=%ld zero=%ld pressure=%ld.%01ldmmHg target=%ld stage=%u speed=%ld",
              (long)raw, (long)Ads1220Driver_ZeroRaw(),
              (long)(pressure_x10 / 10), (long)(pressure_x10 % 10),
              (long)target_mmhg, (unsigned)g_pressure_stage,
@@ -731,7 +737,7 @@ static AppFault pressure_step_once(float target_mmhg, float *measured_mmhg)
         if (*measured_mmhg >= speed_switch) {
             g_pressure_stage = PRESS_STAGE_SLOW;
             g_pressure_stage_ms = now;
-            LOGI("[Pressure] fast->slow pressure=%ld threshold=%ld",
+            LOG_PRESSURE_DIAG("[Pressure] fast->slow pressure=%ld threshold=%ld",
                  (long)*measured_mmhg, (long)speed_switch);
             if (!pressure_set_speed(profile->approach_speed))
                 return pressure_begin_recovery("fast-to-slow command failed");
@@ -753,7 +759,7 @@ static AppFault pressure_step_once(float target_mmhg, float *measured_mmhg)
             }
             command = pressure_control_command(profile, error, dt_s,
                                                g_pressure_hold_timer_started);
-            LOGI("[Pressure] slow->PID hold pressure=%ld threshold=%ld timer=%s",
+            LOG_PRESSURE_DIAG("[Pressure] slow->PID hold pressure=%ld threshold=%ld timer=%s",
                  (long)*measured_mmhg,
                  (long)hold_switch,
                  g_pressure_hold_timer_started ? "started" : "waiting-target");
@@ -770,7 +776,7 @@ static AppFault pressure_step_once(float target_mmhg, float *measured_mmhg)
             *measured_mmhg >= target_mmhg) {
             g_pressure_hold_timer_started = true;
             g_pressure_hold_started_ms = now;
-            LOGI("[Pressure] hold target reached pressure=%ld timer=%lums",
+            LOG_PRESSURE_DIAG("[Pressure] hold target reached pressure=%ld timer=%lums",
                  (long)*measured_mmhg,
                  (unsigned long)PRESSURE_HOLD_TIME_MS);
         }
@@ -781,9 +787,11 @@ static AppFault pressure_step_once(float target_mmhg, float *measured_mmhg)
             g_pressure_stage = PRESS_STAGE_RETRACT;
             g_pressure_stage_ms = now;
             pressure_control_reset();
-            LOGI("[Pressure] hold->retract pressure=%ld held=%lums",
+            LOG_PRESSURE_DIAG("[Pressure] hold->retract pressure=%ld held=%lums retract_ms=%lu retract_speed=%ld target=%ld",
                  (long)*measured_mmhg,
-                 (unsigned long)PRESSURE_HOLD_TIME_MS);
+                 (unsigned long)PRESSURE_HOLD_TIME_MS,
+                 (unsigned long)retract_time_ms, (long)profile->retract_speed,
+                 (long)target_mmhg);
         } else {
             command = pressure_control_command(profile, error, dt_s,
                                                g_pressure_hold_timer_started);
@@ -798,7 +806,7 @@ static AppFault pressure_step_once(float target_mmhg, float *measured_mmhg)
             g_pressure_stage = PRESS_STAGE_FAST;
             g_pressure_stage_ms = now;
             pressure_control_reset();
-            LOGI("[Pressure] retract->fast pressure=%ld elapsed=%lums limit=%lums",
+            LOG_PRESSURE_DIAG("[Pressure] retract->fast pressure=%ld elapsed=%lums limit=%lums",
                  (long)*measured_mmhg,
                  (unsigned long)stage_elapsed_ms,
                  (unsigned long)retract_time_ms);

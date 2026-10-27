@@ -6,8 +6,10 @@
 #define APP_MAX_DISPLAY_TEMPERATURE_C     42.9f
 #define APP_MAX_SAFE_TEMPERATURE_C        44.0f
 #define APP_OVER_TEMPERATURE_CONFIRM_MS   5000U
-#define APP_MAX_SAFE_PRESSURE_MMHG        650.0f
-#define APP_OVER_PRESSURE_CONFIRM_SAMPLES 3U
+#define APP_MAX_SAFE_PRESSURE_MMHG        700.0f
+#define APP_OVER_PRESSURE_CONFIRM_MS      900U
+/* Keep the tuning protocol's target range independent of the safety limit. */
+#define APP_MAX_TARGET_PRESSURE_MMHG      650.0f
 
 /* Measured effective compression area. Pressure is derived from load-cell
  * force with 1 mmHg = 133.322 Pa and area expressed in mm^2. */

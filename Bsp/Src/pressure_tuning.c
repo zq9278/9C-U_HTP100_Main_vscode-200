@@ -23,12 +23,13 @@
      TUNING_STORAGE_CRC_BYTES)
 
 /* Used whenever external storage is blank, corrupt or has another version. */
+// 250档：灵敏度0.370mV/V，压力偏移0mmHg，快速速度30000，接近速度9000，回退速度30000，达目标50%切换接近速度、92%进入保压，回退600ms，Kp=600，Ki=0。
 static const PressureTuningProfile g_defaults[PRESSURE_TUNING_PROFILE_COUNT] = {
     {0.380f, 0.0f, 20000.0f, 6000.0f, 15000.0f, 30.0f, 50.0f, 500U, 50.0f, 0.0f},
-    {0.370f, 0.0f, 30000.0f, 9000.0f, 30000.0f, 50.0f, 92.0f, 600U, 600.0f, 0.0f},
+    {0.370f, 0.0f, 30000.0f, 9000.0f, 30000.0f, 50.0f, 60.0f, 600U, 600.0f, 0.0f},
     {0.370f, 0.0f, 40000.0f, 9000.0f, 30000.0f, 65.0f, 70.0f, 500U, 150.0f, 0.0f},
     {0.370f, 0.0f, 45000.0f, 9000.0f, 30000.0f, 55.0f, 60.0f, 500U, 150.0f, 0.0f},
-    {0.370f, 0.0f, 45000.0f, 9000.0f, 30000.0f, 50.0f, 50.0f, 800U, 150.0f, 0.0f}
+    {0.370f, 0.0f, 45000.0f, 9000.0f, 30000.0f, 50.0f, 50.0f, 800U, 100.0f, 0.0f}
 };
 
 static PressureTuningProfile g_profiles[PRESSURE_TUNING_PROFILE_COUNT];

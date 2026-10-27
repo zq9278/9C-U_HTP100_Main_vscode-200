@@ -6,6 +6,7 @@
 #include "app_config.h"
 #include "app_log.h"
 #include "product_config.h"
+#include "pressure_limit.h"
 
 #define SCREEN_TEMP_HEAT             0x2041U
 #define SCREEN_TEMP_AUTO             0x2037U
@@ -37,6 +38,7 @@ typedef struct {
     bool temp_comm_failure_timing;
     uint32_t over_temperature_started_ms;
     bool over_temperature_timing;
+    PressureLimit pressure_limit;
     uint8_t low_voltage_samples;
     bool count_recorded;
     bool pending_power_off;
@@ -161,6 +163,7 @@ static void try_clear_tmp112_fault(void)
 
 static void safe_outputs_off(void)
 {
+    PressureLimit_Reset(&g_app.pressure_limit);
     if (g_app.port == NULL) {
         return;
     }
@@ -803,10 +806,11 @@ static void tick_pressure(uint32_t now)
     fault = g_app.port->pressure_control_step(g_app.status.settings.pressure_mmhg,
                                               &measured);
     if (fault != APP_FAULT_NONE) {
+        PressureLimit_Reset(&g_app.pressure_limit);
         AppController_RaiseFault(fault);
         return;
     }
-    if (measured >= APP_MAX_SAFE_PRESSURE_MMHG) {
+    if (PressureLimit_Update(&g_app.pressure_limit, measured, now_ms())) {
         /* Stop the motor before formatting or transmitting fault diagnostics. */
         if (g_app.port != NULL && g_app.port->pressure_control_stop != NULL) {
             g_app.port->pressure_control_stop();

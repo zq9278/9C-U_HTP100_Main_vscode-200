@@ -84,4 +84,12 @@
 - Interrupts only enqueue/capture UART bytes and set button/power-loss flags.
 - No application task is dynamically deleted, suspended, or resumed.
 - A treatment cannot start unless home and the unloaded ADS1220 zero are valid.
-- Temperature >= 44 C and pressure >= 650 mmHg independently stop treatment and latch a fault.
+- Overpressure fault 0x0402 uses unfiltered pressure >= 700 mmHg for at least
+  900 ms from the first over-limit sample, confirmed on a fresh sample. A valid
+  below-limit sample or acquisition failure resets the timer. The application
+  backup check and motor recovery pressure check use the same timing rule;
+  the motor remains disabled during recovery confirmation. Nonfinite recovery
+  pressure remains an immediate rejection. Actual response is at the first
+  eligible pressure check after 900 ms, not a fixed number of samples.
+- Pressure target commands retain their existing upper bound of 650 mmHg.
+- Temperature >= 44 C retains its independent overtemperature protection.

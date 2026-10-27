@@ -434,7 +434,7 @@ static void handle_frame(uint8_t command, uint8_t sequence,
         } else {
             float target = read_float(payload);
             if (!isfinite(target) || target < 1.0f ||
-                target > APP_MAX_SAFE_PRESSURE_MMHG) {
+                target > APP_MAX_TARGET_PRESSURE_MMHG) {
                 send_ack(sequence, command, STATUS_OUT_OF_RANGE);
             } else {
                 AppController_SetPressure(target);
@@ -448,7 +448,7 @@ static void handle_frame(uint8_t command, uint8_t sequence,
         } else {
             float target = read_float(payload);
             if (!isfinite(target) || target < 1.0f ||
-                target > APP_MAX_SAFE_PRESSURE_MMHG) {
+                target > APP_MAX_TARGET_PRESSURE_MMHG) {
                 send_ack(sequence, command, STATUS_OUT_OF_RANGE);
             } else {
                 uint8_t status = prepare_rejection_status(true);

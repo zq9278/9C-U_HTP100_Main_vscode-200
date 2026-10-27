@@ -8,6 +8,8 @@
       "cwd": "${workspaceFolder}",
       "preLaunchTask": "CMake: build Debug",
       "executable": "${workspaceFolder}/build/Debug/9C-HTP100-main-v2.elf",
+      "loadFiles": ["${workspaceFolder}/build/Debug/9C-HTP100-main-v2.elf"],
+      "postLaunchCommands": ["compare-sections"],
       "servertype": "stlink",
       "device": "STM32G070CB",
       "interface": "swd",
@@ -25,14 +27,17 @@
       "cwd": "${workspaceFolder}",
       "preLaunchTask": "CMake: build Debug",
       "executable": "${workspaceFolder}/build/Debug/9C-HTP100-main-v2.elf",
+      "loadFiles": ["${workspaceFolder}/build/Debug/9C-HTP100-main-v2.elf"],
+      "postLaunchCommands": ["compare-sections"],
       "servertype": "jlink",
       "device": "STM32G070CB",
       "interface": "swd",
       "serverpath": "${env:LOCALAPPDATA}/stm32cube/bundles/jlink-gdbserver/9.14.1+st.1/bin/JLinkGDBServerCL.exe",
+      "serverArgs": ["-speed", "1000", "-verify"],
       "gdbPath": "${env:LOCALAPPDATA}/stm32cube/bundles/gnu-gdb-for-stm32/14.3.1+st.2/bin/arm-none-eabi-gdb.exe",
       "armToolchainPath": "${env:LOCALAPPDATA}/stm32cube/bundles/gnu-tools-for-stm32/14.3.1+st.2/bin",
       "runToEntryPoint": "main",
-      "showDevDebugOutput": "none"
+      "showDevDebugOutput": "raw"
     }
   ]
 }

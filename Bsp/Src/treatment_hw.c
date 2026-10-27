@@ -8,6 +8,7 @@
 #include "app_log.h"
 #include "eye_driver.h"
 #include "pressure_tuning.h"
+#include "pressure_limit.h"
 #include "tim.h"
 #include "tmc5130_driver.h"
 
@@ -67,7 +68,7 @@ static int32_t g_ads_last_pressure_x10;
 static int32_t g_ads_last_unfiltered_pressure_x10;
 static bool g_ads_sample_valid;
 static bool g_ads_overpressure_pending;
-static uint8_t g_overpressure_samples;
+static PressureLimit g_overpressure;
 static PressureStage g_pressure_stage;
 static uint32_t g_pressure_stage_ms;
 static uint32_t g_pressure_last_step_ms;
@@ -132,7 +133,7 @@ static void pressure_filter_reset(void)
     g_pressure_filter_index = 0U;
     g_pressure_filtered = 0.0f;
     g_pressure_filter_valid = false;
-    g_overpressure_samples = 0U;
+    PressureLimit_Reset(&g_overpressure);
 }
 
 static float pressure_filter_update(float sample)
@@ -247,6 +248,7 @@ void TreatmentHw_Init(void)
 
 void TreatmentHw_SafeOutputsOff(void)
 {
+    PressureLimit_Reset(&g_overpressure);
     g_pressure_fault_attempts = 0U;
     __HAL_TIM_SET_COMPARE(&htim14, TIM_CHANNEL_1, 0U);
     (void)HAL_TIM_PWM_Stop(&htim14, TIM_CHANNEL_1);
@@ -691,15 +693,15 @@ static AppFault pressure_step_once(float target_mmhg, float *measured_mmhg)
     g_ads_last_unfiltered_pressure_x10 =
         (int32_t)(unfiltered_pressure * 10.0f);
     g_ads_sample_valid = true;
+    bool was_overpressure_timing = g_overpressure.timing;
+    bool overpressure_confirmed = PressureLimit_Update(
+        &g_overpressure, unfiltered_pressure, HAL_GetTick());
     if (unfiltered_pressure >= APP_MAX_SAFE_PRESSURE_MMHG) {
-        if (g_overpressure_samples < APP_OVER_PRESSURE_CONFIRM_SAMPLES) {
-            g_overpressure_samples++;
+        if (!was_overpressure_timing) {
+            LOGW("[Pressure] Over-limit timing started pressure=%ldmmHg confirm=%lums",
+                 (long)unfiltered_pressure, (unsigned long)APP_OVER_PRESSURE_CONFIRM_MS);
         }
-        LOGW("[Pressure] Over-limit sample %u/%u pressure=%ldmmHg",
-             (unsigned)g_overpressure_samples,
-             (unsigned)APP_OVER_PRESSURE_CONFIRM_SAMPLES,
-             (long)unfiltered_pressure);
-        if (g_overpressure_samples >= APP_OVER_PRESSURE_CONFIRM_SAMPLES) {
+        if (overpressure_confirmed) {
             g_ads_overpressure_pending = true;
             return APP_FAULT_OVER_PRESSURE;
         }
@@ -709,9 +711,6 @@ static AppFault pressure_step_once(float target_mmhg, float *measured_mmhg)
                          APP_MAX_SAFE_PRESSURE_MMHG - 0.1f;
         g_ads_last_pressure_x10 = (int32_t)(*measured_mmhg * 10.0f);
         return APP_FAULT_NONE;
-    }
-    if (g_overpressure_samples != 0U) {
-        g_overpressure_samples = 0U;
     }
     *measured_mmhg = pressure_filter_update(unfiltered_pressure);
     g_ads_last_pressure_x10 = (int32_t)(*measured_mmhg * 10.0f);
@@ -835,6 +834,7 @@ AppFault TreatmentHw_PressureStep(float target_mmhg, float *measured_mmhg)
     }
     fault = pressure_step_once(target_mmhg, measured_mmhg);
     if (fault == APP_FAULT_PRESSURE_SENSOR || fault == APP_FAULT_PRESSURE_COMM) {
+        PressureLimit_Reset(&g_overpressure);
         /* Inhibit motion while pressure is unknown; never keep an old speed
          * running during confirmation. Preserve the operation being retried. */
         Tmc5130Driver_Stop();
@@ -870,6 +870,7 @@ AppFault TreatmentHw_PressureStep(float target_mmhg, float *measured_mmhg)
 
 static AppFault pressure_begin_recovery(const char *reason)
 {
+    PressureLimit_Reset(&g_overpressure);
     Tmc5130Driver_Enable(false);
     g_pressure_active = false;
     g_pressure_command = 0.0f;
@@ -899,6 +900,7 @@ static AppFault pressure_recovery_poll(float target_mmhg, float *measured_mmhg)
     Tmc5130Driver_Enable(false);
     if (!Tmc5130Driver_Configure() ||
         !Tmc5130Driver_Probe()) {
+        PressureLimit_Reset(&g_overpressure);
         LOGW("[Motor] Treatment recovery configure/probe failed attempt=%u/%u",
              (unsigned)g_pressure_recovery_attempts,
              (unsigned)APP_TMC_TREATMENT_RECOVERY_TRIES);
@@ -922,11 +924,24 @@ static AppFault pressure_recovery_poll(float target_mmhg, float *measured_mmhg)
     }
 
     pressure = Ads1220Driver_PressureFromRaw(raw, target_mmhg);
-    if (!isfinite(pressure) || pressure >= APP_MAX_SAFE_PRESSURE_MMHG) {
+    if (!isfinite(pressure)) {
         g_pressure_recovering = false;
-        LOGE("[Motor] Treatment recovery rejected pressure_x10=%ld",
-             (long)(pressure * 10.0f));
+        LOGE("[Motor] Treatment recovery rejected nonfinite pressure");
         return APP_FAULT_OVER_PRESSURE;
+    }
+    bool recovery_overpressure = PressureLimit_Update(&g_overpressure, pressure, HAL_GetTick());
+    if (pressure >= APP_MAX_SAFE_PRESSURE_MMHG) {
+        /* Keep the bridge disabled while confirming; never resume into high pressure. */
+        g_ads_last_raw = raw;
+        g_ads_last_unfiltered_pressure_x10 = (int32_t)(pressure * 10.0f);
+        if (recovery_overpressure) {
+            g_pressure_recovering = false;
+            g_ads_overpressure_pending = true;
+            return APP_FAULT_OVER_PRESSURE;
+        }
+        g_pressure_recovery_next_ms = HAL_GetTick() + APP_TMC_RECOVERY_RETRY_MS;
+        *measured_mmhg = g_pressure_filter_valid ? g_pressure_filtered : 0.0f;
+        return APP_FAULT_NONE;
     }
     profile = PressureTuning_ProfileForTarget(target_mmhg);
     speed_switch = target_mmhg * profile->speed_switch_percent * 0.01f;
@@ -975,6 +990,7 @@ bool TreatmentHw_PressureTelemetry(int32_t *raw, float *pressure_mmhg,
 
 void TreatmentHw_PressureStop(void)
 {
+    PressureLimit_Reset(&g_overpressure);
     g_pressure_fault_attempts = 0U;
     g_pressure_active = false;
     g_pressure_recovering = false;

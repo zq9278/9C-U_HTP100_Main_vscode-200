@@ -16,6 +16,8 @@ static AppAsyncResult fake_home_result;
 static AppEyeState fake_eye;
 static bool fake_heat_ok;
 static AppFault fake_pressure_fault;
+static bool fake_pressure_override;
+static float fake_pressure_measured;
 static AppFault fake_zero_fault;
 static unsigned home_begin_count;
 static unsigned home_poll_count;
@@ -46,7 +48,7 @@ static bool heat(float target, float *measured)
 }
 static bool pressure_start(float target) { (void)target; pressure_start_count++; return true; }
 static AppFault pressure_step(float target, float *measured)
-{ *measured = target; return fake_pressure_fault; }
+{ *measured = fake_pressure_override ? fake_pressure_measured : target; return fake_pressure_fault; }
 static void pressure_stop(void) { }
 static bool home_begin(void) { home_begin_count++; return true; }
 static AppAsyncResult home_poll(void) { home_poll_count++; return fake_home_result; }
@@ -101,6 +103,8 @@ static void reset_fixture(void)
     fake_eye = APP_EYE_NEW;
     fake_heat_ok = true;
     fake_pressure_fault = APP_FAULT_NONE;
+    fake_pressure_override = false;
+    fake_pressure_measured = 0.0f;
     fake_zero_fault = APP_FAULT_NONE;
     home_begin_count = home_poll_count = home_cancel_count = eye_consume_count = 0U;
     treatment_count = power_off_count = pressure_start_count = 0U;
@@ -483,8 +487,62 @@ static void test_fault_stop_cannot_quick_resume(void)
     assert(home_cancel_count == 0U);
 }
 
+static void test_overpressure_backup_waits_900ms(void)
+{
+    reset_fixture();
+    assert(AppController_Prepare(APP_MODE_PRESSURE, 250.0f));
+    assert(AppController_Start());
+    fake_pressure_override = true;
+    fake_pressure_measured = 700.0f;
+    const uint32_t before_confirmation[] = {20U, 40U, 80U, 320U, 919U};
+    for (unsigned i = 0U; i < sizeof(before_confirmation) / sizeof(before_confirmation[0]); ++i) {
+        fake_now = before_confirmation[i];
+        AppController_Tick();
+        assert(AppController_Status()->fault == APP_FAULT_NONE);
+        assert(AppController_Status()->state == APP_STATE_RUNNING);
+    }
+    /* Respect the scheduler's 20 ms spacing: first eligible check after 900 ms. */
+    fake_now = 939U;
+    AppController_Tick();
+    assert(AppController_Status()->fault == APP_FAULT_OVER_PRESSURE);
+    assert(AppController_Status()->stop_reason == APP_STOP_FAULT);
+    assert(AppController_Status()->state == APP_STATE_HOMING);
+}
+
+static void test_overpressure_backup_cancels_on_recovery_and_stop(void)
+{
+    reset_fixture();
+    assert(AppController_Prepare(APP_MODE_PRESSURE, 250.0f));
+    assert(AppController_Start());
+    fake_pressure_override = true;
+    fake_pressure_measured = 800.0f;
+    fake_now = 20U;
+    AppController_Tick();
+    fake_pressure_measured = 699.0f;
+    fake_now = 280U;
+    AppController_Tick();
+    fake_pressure_measured = 800.0f;
+    fake_now = 300U;
+    AppController_Tick();
+    fake_now = 580U;
+    AppController_Tick();
+    assert(AppController_Status()->fault == APP_FAULT_NONE);
+    AppController_Stop(APP_STOP_USER);
+    AppController_Tick();
+    assert(AppController_Prepare(APP_MODE_PRESSURE, 250.0f));
+    assert(AppController_Start());
+    fake_now = 1000U;
+    AppController_Tick();
+    assert(AppController_Status()->fault == APP_FAULT_NONE);
+    fake_now = 1900U;
+    AppController_Tick();
+    assert(AppController_Status()->fault == APP_FAULT_OVER_PRESSURE);
+}
+
 int main(void)
 {
+    test_overpressure_backup_waits_900ms();
+    test_overpressure_backup_cancels_on_recovery_and_stop();
     test_eye_is_consumed_only_at_formal_start();
     test_reinserted_consumed_eye_is_rejected();
     test_eye_offline_state_is_repeated_to_screen();

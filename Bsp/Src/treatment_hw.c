@@ -26,6 +26,7 @@ typedef enum {
 #define PRESSURE_CONTROL_SLEW_PER_S    100000.0f
 #define PRESSURE_CONTROL_MIN_SPEED     300.0f
 #define PRESSURE_HOLD_TIME_MS          1000U
+#define PRESSURE_APPROACH_TIMEOUT_MS   5000U
 #define PRESSURE_STEP_DEFAULT_DT_S     0.02f
 #define PRESSURE_STEP_MIN_DT_S         0.005f
 #define PRESSURE_STEP_MAX_DT_S         0.10f
@@ -71,6 +72,7 @@ static bool g_ads_overpressure_pending;
 static PressureLimit g_overpressure;
 static PressureStage g_pressure_stage;
 static uint32_t g_pressure_stage_ms;
+static uint32_t g_pressure_approach_started_ms;
 static uint32_t g_pressure_last_step_ms;
 static uint32_t g_pressure_hold_started_ms;
 static uint32_t g_pressure_last_tmc_probe_ms;
@@ -186,55 +188,13 @@ static float pressure_control_command(const PressureTuningProfile *profile,
                                       float error, float dt_s,
                                       bool use_deadband)
 {
-    float effective_error = error;
-    float proportional;
-    float candidate_integral;
-    float candidate_i_output;
-    float candidate_command;
-    float desired;
-    float max_delta;
-    float speed_limit = clamp_float(profile->approach_speed,
-                                    PRESSURE_CONTROL_MIN_SPEED,
-                                    PRESSURE_CONTROL_MAX_SPEED);
-
-    if (use_deadband && fabsf(error) <= PRESSURE_CONTROL_DEADBAND) {
-        g_pressure_integral *= 0.95f;
-        desired = 0.0f;
-    } else {
-        proportional = profile->kp * effective_error;
-        if (profile->ki > 0.0f) {
-            candidate_integral = g_pressure_integral + effective_error * dt_s;
-            candidate_i_output = clamp_float(profile->ki * candidate_integral,
-                                              -PRESSURE_CONTROL_MAX_I_OUTPUT,
-                                              PRESSURE_CONTROL_MAX_I_OUTPUT);
-            candidate_integral = candidate_i_output / profile->ki;
-            candidate_command = proportional + candidate_i_output;
-
-            /* Conditional integration: do not accumulate farther into an
-             * already saturated output, but always allow unwinding. */
-            if ((candidate_command < speed_limit &&
-                 candidate_command > -speed_limit) ||
-                (candidate_command >= speed_limit &&
-                 effective_error < 0.0f) ||
-                (candidate_command <= -speed_limit &&
-                 effective_error > 0.0f)) {
-                g_pressure_integral = candidate_integral;
-            }
-        } else {
-            g_pressure_integral = 0.0f;
-        }
-        desired = proportional + profile->ki * g_pressure_integral;
-        desired = clamp_float(desired, -speed_limit, speed_limit);
-        if (desired > 0.0f && desired < PRESSURE_CONTROL_MIN_SPEED) {
-            desired = PRESSURE_CONTROL_MIN_SPEED;
-        } else if (desired < 0.0f && desired > -PRESSURE_CONTROL_MIN_SPEED) {
-            desired = -PRESSURE_CONTROL_MIN_SPEED;
-        }
-    }
-
-    max_delta = PRESSURE_CONTROL_SLEW_PER_S * dt_s;
-    return clamp_float(desired, g_pressure_command - max_delta,
-                       g_pressure_command + max_delta);
+    (void)dt_s;
+    g_pressure_integral = 0.0f;
+    if (use_deadband && fabsf(error) <= PRESSURE_CONTROL_DEADBAND)
+        return 0.0f;
+    /* Pure P velocity control; allow both compression and unloading. */
+    const float limit = 3000.0f; /* Internal P-control output limit. */
+    return clamp_float(profile->kp * error, -limit, limit);
 }
 
 void TreatmentHw_Init(void)
@@ -611,6 +571,7 @@ bool TreatmentHw_PressureStart(float target_mmhg)
     }
     g_pressure_stage = PRESS_STAGE_FAST;
     g_pressure_stage_ms = HAL_GetTick();
+    g_pressure_approach_started_ms = g_pressure_stage_ms;
     g_pressure_last_step_ms = g_pressure_stage_ms;
     g_pressure_last_tmc_probe_ms = g_pressure_stage_ms;
     g_pressure_last_sensor_check_ms = g_pressure_stage_ms;
@@ -623,10 +584,7 @@ bool TreatmentHw_PressureStart(float target_mmhg)
     g_pressure_active = true;
     LOG_PRESSURE_DIAG("[Pressure] Start target=%ldmmHg stage=fast",
          (long)target_mmhg);
-    LOG_PRESSURE_DIAG("[Pressure] Active profile kp_x10=%ld ki_x10=%ld approach=%ld retract_speed=%ld retract_ms=%lu",
-         (long)(profile->kp * 10.0f), (long)(profile->ki * 10.0f),
-         (long)profile->approach_speed, (long)profile->retract_speed,
-         (unsigned long)profile->retract_ms);
+    LOG_PRESSURE_DIAG("[Pressure] P profile kp=%ld", (long)profile->kp);
     return true;
 }
 
@@ -640,8 +598,6 @@ static AppFault pressure_step_once(float target_mmhg, float *measured_mmhg)
     uint32_t elapsed_ms = now - g_pressure_last_step_ms;
     uint32_t stage_elapsed_ms = now - g_pressure_stage_ms;
     float unfiltered_pressure;
-    float speed_switch;
-    float hold_switch;
     float dt_s;
     float error;
     float command;
@@ -725,54 +681,53 @@ static AppFault pressure_step_once(float target_mmhg, float *measured_mmhg)
         g_ads_last_log_ms = now;
     }
 
-    speed_switch = target_mmhg * profile->speed_switch_percent * 0.01f;
-    hold_switch = target_mmhg * profile->hold_switch_percent * 0.01f;
-    retract_time_ms = profile->retract_ms;
+    retract_time_ms = 5000U; /* Maximum release duration, not normal endpoint. */
+
+    /* One deadline for the whole approach, including P correction before
+     * reaching the target band. Entering HOLD must not restart it. */
+    if (g_pressure_stage != PRESS_STAGE_RETRACT &&
+        !g_pressure_hold_timer_started &&
+        fabsf(target_mmhg - *measured_mmhg) > 10.0f &&
+        now - g_pressure_approach_started_ms >= PRESSURE_APPROACH_TIMEOUT_MS) {
+        g_pressure_stage = PRESS_STAGE_RETRACT;
+        g_pressure_stage_ms = now;
+        pressure_control_reset();
+        if (!pressure_set_speed(-profile->retract_speed))
+            return pressure_begin_recovery("approach timeout retract failed");
+        LOGW("[Pressure] Approach timeout: retract and retry");
+        return APP_FAULT_NONE;
+    }
 
     switch (g_pressure_stage) {
     case PRESS_STAGE_FAST:
-        error = target_mmhg - *measured_mmhg;
-        g_pressure_error = error;
-        if (*measured_mmhg >= speed_switch) {
-            g_pressure_stage = PRESS_STAGE_SLOW;
-            g_pressure_stage_ms = now;
-            LOG_PRESSURE_DIAG("[Pressure] fast->slow pressure=%ld threshold=%ld",
-                 (long)*measured_mmhg, (long)speed_switch);
-            if (!pressure_set_speed(profile->approach_speed))
-                return pressure_begin_recovery("fast-to-slow command failed");
-        } else if (!pressure_set_speed(profile->fast_speed)) {
-            return pressure_begin_recovery("fast command failed");
-        }
-        break;
     case PRESS_STAGE_SLOW:
         error = target_mmhg - *measured_mmhg;
         g_pressure_error = error;
-        if (*measured_mmhg >= hold_switch) {
+        /* Full speed at low pressure, continuously taper over the profile-defined pressure interval. */
+        command = clamp_float(profile->fast_speed * error /
+                              fmaxf(target_mmhg * profile->approach_ratio, 1.0f),
+                              0.0f, profile->fast_speed);
+        if (error <= 10.0f) {
             g_pressure_stage = PRESS_STAGE_HOLD;
             g_pressure_stage_ms = now;
             pressure_control_reset();
             g_pressure_error = error;
-            if (*measured_mmhg >= target_mmhg) {
+            if (fabsf(error) <= 10.0f) {
                 g_pressure_hold_timer_started = true;
                 g_pressure_hold_started_ms = now;
             }
             command = pressure_control_command(profile, error, dt_s,
                                                g_pressure_hold_timer_started);
-            LOG_PRESSURE_DIAG("[Pressure] slow->PID hold pressure=%ld threshold=%ld timer=%s",
-                 (long)*measured_mmhg,
-                 (long)hold_switch,
-                 g_pressure_hold_timer_started ? "started" : "waiting-target");
-            if (!pressure_set_speed(command))
-                return pressure_begin_recovery("slow-to-hold command failed");
-        } else if (!pressure_set_speed(profile->approach_speed)) {
-            return pressure_begin_recovery("slow command failed");
         }
+        if (!pressure_set_speed(command))
+            return pressure_begin_recovery("approach command failed");
         break;
     case PRESS_STAGE_HOLD:
         error = target_mmhg - *measured_mmhg;
         g_pressure_error = error;
+        /* Start the one-second hold on first entry into the target band. */
         if (!g_pressure_hold_timer_started &&
-            *measured_mmhg >= target_mmhg) {
+            fabsf(error) <= 10.0f) {
             g_pressure_hold_timer_started = true;
             g_pressure_hold_started_ms = now;
             LOG_PRESSURE_DIAG("[Pressure] hold target reached pressure=%ld timer=%lums",
@@ -799,17 +754,22 @@ static AppFault pressure_step_once(float target_mmhg, float *measured_mmhg)
         }
         break;
     case PRESS_STAGE_RETRACT:
-        if (stage_elapsed_ms >= retract_time_ms) {
+        if (unfiltered_pressure < 50.0f) {
             if (!pressure_set_speed(0.0f))
                 return pressure_begin_recovery("retract stop command failed");
             g_pressure_stage = PRESS_STAGE_FAST;
             g_pressure_stage_ms = now;
+            g_pressure_approach_started_ms = now;
             pressure_control_reset();
             LOG_PRESSURE_DIAG("[Pressure] retract->fast pressure=%ld elapsed=%lums limit=%lums",
                  (long)*measured_mmhg,
                  (unsigned long)stage_elapsed_ms,
                  (unsigned long)retract_time_ms);
         } else {
+            if (stage_elapsed_ms >= retract_time_ms) {
+                (void)pressure_set_speed(0.0f);
+                return APP_FAULT_PRESSURE_SENSOR;
+            }
             if (!pressure_set_speed(-profile->retract_speed))
                 return pressure_begin_recovery("retract command failed");
         }
@@ -884,12 +844,9 @@ static AppFault pressure_begin_recovery(const char *reason)
 
 static AppFault pressure_recovery_poll(float target_mmhg, float *measured_mmhg)
 {
-    const PressureTuningProfile *profile;
     Ads1220Result sensor_result;
     int32_t raw;
     float pressure;
-    float speed_switch;
-    float hold_switch;
     uint32_t now = HAL_GetTick();
 
     if ((int32_t)(now - g_pressure_recovery_next_ms) < 0) {
@@ -943,9 +900,6 @@ static AppFault pressure_recovery_poll(float target_mmhg, float *measured_mmhg)
         *measured_mmhg = g_pressure_filter_valid ? g_pressure_filtered : 0.0f;
         return APP_FAULT_NONE;
     }
-    profile = PressureTuning_ProfileForTarget(target_mmhg);
-    speed_switch = target_mmhg * profile->speed_switch_percent * 0.01f;
-    hold_switch = target_mmhg * profile->hold_switch_percent * 0.01f;
     pressure_control_reset();
     pressure_filter_reset();
     *measured_mmhg = pressure_filter_update(pressure);
@@ -953,9 +907,10 @@ static AppFault pressure_recovery_poll(float target_mmhg, float *measured_mmhg)
     g_ads_last_unfiltered_pressure_x10 = (int32_t)(pressure * 10.0f);
     g_ads_last_pressure_x10 = (int32_t)(*measured_mmhg * 10.0f);
     g_ads_sample_valid = true;
-    g_pressure_stage = pressure >= hold_switch ? PRESS_STAGE_HOLD :
-                       pressure >= speed_switch ? PRESS_STAGE_SLOW : PRESS_STAGE_FAST;
+    g_pressure_stage = pressure >= target_mmhg * 0.9f ?
+                       PRESS_STAGE_HOLD : PRESS_STAGE_FAST;
     g_pressure_stage_ms = now;
+    g_pressure_approach_started_ms = now;
     g_pressure_last_step_ms = now;
     g_pressure_last_tmc_probe_ms = now;
     g_pressure_last_sensor_check_ms = now;

@@ -7,16 +7,10 @@
 #define PRESSURE_TUNING_PROFILE_COUNT 5U
 
 typedef struct {
-    float sensitivity_mv_v;
-    float offset_mmhg;
     float fast_speed;
-    float approach_speed;
     float retract_speed;
-    float speed_switch_percent;
-    float hold_switch_percent;
-    uint32_t retract_ms;
     float kp;
-    float ki;
+    float approach_ratio; /* ?????????????????? */
 } PressureTuningProfile;
 
 void PressureTuning_Init(void);

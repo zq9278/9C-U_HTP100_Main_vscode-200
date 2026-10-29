@@ -15,7 +15,7 @@
 
 #define TUNING_HEADER_0         0x7AU
 #define TUNING_HEADER_1         0xA7U
-#define TUNING_PROTOCOL_VERSION 8U
+#define TUNING_PROTOCOL_VERSION 12U
 #define TUNING_TAIL_0           0x0DU
 #define TUNING_TAIL_1           0x0AU
 #define TUNING_FIXED_BYTES      10U
@@ -37,7 +37,7 @@
 #define CMD_GET_STATUS          0x25U
 #define CMD_GET_HEAT_PID        0x26U
 #define CMD_SET_HEAT_PID        0x27U
-#define CMD_SET_TEMPERATURE     0x28U
+#define CMD_SET_ERATURE     0x28U
 #define CMD_PREPARE_HEAT        0x29U
 #define CMD_DEBUG_CONTROL       0x30U
 
@@ -60,7 +60,7 @@
 #define STATUS_EYE_INVALID      9U
 #define STATUS_ZERO_INVALID     10U
 
-#define PROFILE_FLOAT_COUNT     10U
+#define PROFILE_FLOAT_COUNT     4U
 #define PROFILE_PAYLOAD_BYTES   (1U + PROFILE_FLOAT_COUNT * 4U)
 #define TELEMETRY_MIN_PERIOD_MS 50U
 #define TELEMETRY_MAX_PERIOD_MS 2000U
@@ -158,36 +158,18 @@ static void profile_to_payload(uint8_t *payload, uint8_t index,
                                const PressureTuningProfile *profile)
 {
     payload[0] = index;
-    write_float(&payload[1], profile->sensitivity_mv_v);
-    write_float(&payload[5], profile->offset_mmhg);
-    write_float(&payload[9], profile->fast_speed);
-    write_float(&payload[13], profile->approach_speed);
-    write_float(&payload[17], profile->retract_speed);
-    write_float(&payload[21], profile->speed_switch_percent);
-    write_float(&payload[25], profile->hold_switch_percent);
-    write_float(&payload[29], (float)profile->retract_ms);
-    write_float(&payload[33], profile->kp);
-    write_float(&payload[37], profile->ki);
+    write_float(&payload[1], profile->fast_speed);
+    write_float(&payload[5], profile->retract_speed);
+    write_float(&payload[9], profile->kp);
+    write_float(&payload[13], profile->approach_ratio);
 }
 
 static bool payload_to_profile(PressureTuningProfile *profile, const uint8_t *payload)
 {
-    float retract_ms = read_float(&payload[29]);
-
-    if (!isfinite(retract_ms) || retract_ms < 0.0f ||
-        retract_ms > 10000.0f) {
-        return false;
-    }
-    profile->sensitivity_mv_v = read_float(&payload[1]);
-    profile->offset_mmhg = read_float(&payload[5]);
-    profile->fast_speed = read_float(&payload[9]);
-    profile->approach_speed = read_float(&payload[13]);
-    profile->retract_speed = read_float(&payload[17]);
-    profile->speed_switch_percent = read_float(&payload[21]);
-    profile->hold_switch_percent = read_float(&payload[25]);
-    profile->retract_ms = (uint32_t)lroundf(retract_ms);
-    profile->kp = read_float(&payload[33]);
-    profile->ki = read_float(&payload[37]);
+    profile->fast_speed = read_float(&payload[1]);
+    profile->retract_speed = read_float(&payload[5]);
+    profile->kp = read_float(&payload[9]);
+    profile->approach_ratio = read_float(&payload[13]);
     return true;
 }
 
@@ -328,19 +310,10 @@ static bool set_profile_field(uint8_t profile_index, uint8_t field_index,
         return false;
     }
     switch (field_index) {
-    case 0U: profile.sensitivity_mv_v = value; break;
-    case 1U: profile.offset_mmhg = value; break;
-    case 2U: profile.fast_speed = value; break;
-    case 3U: profile.approach_speed = value; break;
-    case 4U: profile.retract_speed = value; break;
-    case 5U: profile.speed_switch_percent = value; break;
-    case 6U: profile.hold_switch_percent = value; break;
-    case 7U:
-        if (value < 0.0f || value > 10000.0f) return false;
-        profile.retract_ms = (uint32_t)lroundf(value);
-        break;
-    case 8U: profile.kp = value; break;
-    case 9U: profile.ki = value; break;
+    case 0U: profile.fast_speed = value; break;
+    case 1U: profile.retract_speed = value; break;
+    case 2U: profile.kp = value; break;
+    case 3U: profile.approach_ratio = value; break;
     default: return false;
     }
     return PressureTuning_Set(profile_index, &profile);
@@ -516,7 +489,7 @@ static void handle_frame(uint8_t command, uint8_t sequence,
             send_ack(sequence, command, STATUS_OK);
         }
         break;
-    case CMD_SET_TEMPERATURE:
+    case CMD_SET_ERATURE:
         if (payload_length != 4U) {
             send_ack(sequence, command, STATUS_BAD_PAYLOAD);
         } else {
@@ -657,3 +630,4 @@ void TuningProtocol_Tick(void)
         send_telemetry(g_telemetry_sequence++);
     }
 }
+

@@ -1,0 +1,1 @@
+const {contextBridge,ipcRenderer}=require('electron');contextBridge.exposeInMainWorld('tuner',{connect:()=>ipcRenderer.invoke('connect'),write:(i,v)=>ipcRenderer.invoke('write',i,v),disconnect:()=>ipcRenderer.invoke('disconnect'),onLog:fn=>ipcRenderer.on('log',(_,s)=>fn(s)),onConnection:fn=>ipcRenderer.on('connection',(_,s)=>fn(s))});

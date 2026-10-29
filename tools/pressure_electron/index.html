@@ -1,0 +1,7 @@
+﻿<!doctype html>
+<html lang="zh"><meta charset="utf-8"><title>J-Link Pressure Tuner</title>
+<style>body{font:16px system-ui;background:#101827;color:#e2e8f0;margin:30px}button,input,select{font:inherit;padding:10px;margin:5px}input{width:130px}label{display:inline-block}pre{white-space:pre-wrap}</style>
+<h2 id="title"></h2><button id="connect"></button><button id="disconnect" disabled></button><p id="status"></p>
+<select id="profile"><option value="0">150</option><option value="1" selected>250</option><option value="2">350</option><option value="3">450</option><option value="4">550</option></select>
+<div><label><span id="fastLabel"></span><input id="fast" type="number" min="0" max="65535"></label><label><span id="retractLabel"></span><input id="retract" type="number" min="0" max="65535"></label><label>Kp<input id="kp" type="number" min="0" max="1000"></label><label><span id="ratioLabel"></span><input id="ratio" type="number" min="0.01" max="1" step="0.01"></label></div>
+<button id="write" disabled></button><p id="note"></p><pre id="log"></pre><script src="renderer.js"></script></html>

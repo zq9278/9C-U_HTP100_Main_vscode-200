@@ -222,15 +222,15 @@ Ads1220Result Ads1220Driver_CheckSensor(void)
 
 float Ads1220Driver_PressureFromRaw(int32_t raw, float target_mmhg)
 {
-    const PressureTuningProfile *profile = PressureTuning_ProfileForTarget(target_mmhg);
+    (void)target_mmhg; /* Shared sensor calibration for all pressure profiles. */
     float input_voltage = ((float)(-(raw - g_zero_raw)) * 3.3f) / 8388607.0f;
     float load_voltage = input_voltage / 128.0f;
     float weight_g = load_voltage /
-                     ((profile->sensitivity_mv_v / 1000.0f) * 3.3f) * 1000.0f;
+                     ((0.370f / 1000.0f) * 3.3f) * 1000.0f;
     float force_n = (weight_g / 1000.0f) * APP_STANDARD_GRAVITY_M_S2;
     float pressure = force_n /
                      (APP_PRESSURE_EFFECTIVE_AREA_MM2 * 1.0e-6f *
-                      APP_PASCAL_PER_MMHG) + profile->offset_mmhg;
+                      APP_PASCAL_PER_MMHG);
 
     return pressure < 0.0f ? 0.0f : pressure;
 }

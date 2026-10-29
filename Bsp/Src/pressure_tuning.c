@@ -10,12 +10,14 @@
 /* Temporary tuning switch: 1 uses the code table directly for control and
  * queries, and rejects host profile writes/saves. Set to 0 to restore
  * EEPROM loading and normal RAM/host tuning. */
-#define TUNING_USE_CODE_DEFAULTS     1U
+#define PRESSURE_JLINK_TUNING_ENABLE 1U
+#define TUNING_USE_CODE_DEFAULTS     (PRESSURE_JLINK_TUNING_ENABLE == 0U)
+const volatile uint32_t g_pressure_jlink_tuning_enabled = PRESSURE_JLINK_TUNING_ENABLE;
 #define TUNING_STORAGE_MAGIC_0       0x50U
 #define TUNING_STORAGE_MAGIC_1       0x54U
-#define TUNING_STORAGE_VERSION       8U
+#define TUNING_STORAGE_VERSION       12U
 #define TUNING_STORAGE_HEADER_BYTES  4U
-#define TUNING_STORAGE_PROFILE_BYTES 20U
+#define TUNING_STORAGE_PROFILE_BYTES 8U
 #define TUNING_STORAGE_CRC_BYTES     2U
 #define TUNING_STORAGE_TOTAL_BYTES   \
     (TUNING_STORAGE_HEADER_BYTES + \
@@ -23,13 +25,25 @@
      TUNING_STORAGE_CRC_BYTES)
 
 /* Used whenever external storage is blank, corrupt or has another version. */
-// 250档：灵敏度0.370mV/V，压力偏移0mmHg，快速速度30000，接近速度9000，回退速度30000，达目标50%切换接近速度、92%进入保压，回退600ms，Kp=600，Ki=0。
+
+// 速度为驱动器速度指令值；保压速度还受内部3000上限约束，实际上限=min(表中值,3000)。
+// ??????(mV/V)?????(mmHg)????????????????????Kp????????
+// ???????????0.3????????????30%??????
 static const PressureTuningProfile g_defaults[PRESSURE_TUNING_PROFILE_COUNT] = {
-    {0.380f, 0.0f, 20000.0f, 6000.0f, 15000.0f, 30.0f, 50.0f, 500U, 50.0f, 0.0f},
-    {0.370f, 0.0f, 30000.0f, 9000.0f, 30000.0f, 50.0f, 60.0f, 600U, 600.0f, 0.0f},
-    {0.370f, 0.0f, 40000.0f, 9000.0f, 30000.0f, 65.0f, 70.0f, 500U, 150.0f, 0.0f},
-    {0.370f, 0.0f, 45000.0f, 9000.0f, 30000.0f, 55.0f, 60.0f, 500U, 150.0f, 0.0f},
-    {0.370f, 0.0f, 45000.0f, 9000.0f, 30000.0f, 50.0f, 50.0f, 800U, 100.0f, 0.0f}
+// 当前有效字段：快速推进速度上限、快速回退速度、比例增益Kp、减速区间比例。
+// 当前字段：灵敏度(mV/V)、压力偏移(mmHg)、推进速度上限、回退速度、Kp、减速区间比例。
+//灵敏度、压力偏移、快速推进速度上限、保压双向补偿速度上限、快速回退速度、比例增益Kp。
+    // {0.380f, 0.0f, 20000.0f,        6000.0f,            15000.0f,   50.0f},
+    // {0.370f, 0.0f, 30000.0f,        9000.0f,            30000.0f,   600.0f},
+    // {0.370f, 0.0f, 40000.0f,        9000.0f,            30000.0f,   150.0f},
+    // {0.370f, 0.0f, 45000.0f,        9000.0f,            30000.0f,   150.0f},
+    // {0.370f, 0.0f, 45000.0f,        9000.0f,            30000.0f,   100.0f}
+
+    { 20000.0f,  40000.0f,   30.0f, 0.9f},
+    { 40000.0f,  65000.0f,   1.0f,  0.5f},
+    { 40000.0f,  65000.0f,   1.0f,  0.8f},
+    { 45000.0f,  65000.0f,   1.0f,  0.8f},
+    { 45000.0f,  65000.0f,   1.0f,  0.9f}
 };
 
 static PressureTuningProfile g_profiles[PRESSURE_TUNING_PROFILE_COUNT];
@@ -62,56 +76,29 @@ static void write_u16_le(uint8_t *data, uint16_t value)
 static bool profile_valid(const PressureTuningProfile *profile)
 {
     return profile != NULL &&
-           isfinite(profile->sensitivity_mv_v) &&
-           isfinite(profile->offset_mmhg) &&
            isfinite(profile->fast_speed) &&
-           isfinite(profile->approach_speed) &&
            isfinite(profile->retract_speed) &&
-           isfinite(profile->speed_switch_percent) &&
-           isfinite(profile->hold_switch_percent) &&
-           isfinite(profile->kp) && isfinite(profile->ki) &&
-           profile->sensitivity_mv_v >= 0.05f && profile->sensitivity_mv_v <= 5.0f &&
-           profile->offset_mmhg >= -200.0f && profile->offset_mmhg <= 200.0f &&
            profile->fast_speed >= 0.0f && profile->fast_speed <= 65535.0f &&
-           profile->approach_speed >= 0.0f && profile->approach_speed <= 65535.0f &&
            profile->retract_speed >= 0.0f && profile->retract_speed <= 65535.0f &&
-           profile->speed_switch_percent >= 5.0f &&
-           profile->speed_switch_percent <= 100.0f &&
-           profile->hold_switch_percent >= profile->speed_switch_percent &&
-           profile->hold_switch_percent <= 100.0f &&
-           profile->retract_ms <= 10000U &&
-           profile->kp >= 0.0f && profile->kp <= 1000.0f &&
-           profile->ki >= 0.0f && profile->ki <= 100.0f;
+           isfinite(profile->kp) && profile->kp >= 0.0f && profile->kp <= 1000.0f &&
+           isfinite(profile->approach_ratio) &&
+           profile->approach_ratio >= 0.01f && profile->approach_ratio <= 1.0f;
 }
 
 static void encode_profile(uint8_t *data, const PressureTuningProfile *profile)
 {
-    write_u16_le(&data[0], (uint16_t)lroundf(profile->sensitivity_mv_v * 10000.0f));
-    write_u16_le(&data[2], (uint16_t)(int16_t)lroundf(profile->offset_mmhg * 10.0f));
-    write_u16_le(&data[4], (uint16_t)lroundf(profile->fast_speed));
-    write_u16_le(&data[6], (uint16_t)lroundf(profile->approach_speed));
-    write_u16_le(&data[8], (uint16_t)lroundf(profile->retract_speed));
-    write_u16_le(&data[10], (uint16_t)lroundf(profile->speed_switch_percent * 10.0f));
-    write_u16_le(&data[12], (uint16_t)lroundf(profile->hold_switch_percent * 10.0f));
-    write_u16_le(&data[14], (uint16_t)profile->retract_ms);
-    write_u16_le(&data[16], (uint16_t)lroundf(profile->kp * 10.0f));
-    write_u16_le(&data[18], (uint16_t)lroundf(profile->ki * 10.0f));
+    write_u16_le(&data[0], (uint16_t)lroundf(profile->fast_speed));
+    write_u16_le(&data[2], (uint16_t)lroundf(profile->retract_speed));
+    write_u16_le(&data[6], (uint16_t)lroundf(profile->approach_ratio * 10000.0f));
+    write_u16_le(&data[4], (uint16_t)lroundf(profile->kp * 10.0f));
 }
 
 static void decode_profile(PressureTuningProfile *profile, const uint8_t *data)
 {
-    profile->sensitivity_mv_v = (float)read_u16_le(&data[0]) / 10000.0f;
-    profile->offset_mmhg = (float)(int16_t)read_u16_le(&data[2]) / 10.0f;
-    profile->fast_speed = (float)read_u16_le(&data[4]);
-    profile->approach_speed = (float)read_u16_le(&data[6]);
-    profile->retract_speed = (float)read_u16_le(&data[8]);
-    profile->speed_switch_percent =
-        (float)read_u16_le(&data[10]) / 10.0f;
-    profile->hold_switch_percent =
-        (float)read_u16_le(&data[12]) / 10.0f;
-    profile->retract_ms = read_u16_le(&data[14]);
-    profile->kp = (float)read_u16_le(&data[16]) / 10.0f;
-    profile->ki = (float)read_u16_le(&data[18]) / 10.0f;
+    profile->fast_speed = (float)read_u16_le(&data[0]);
+    profile->retract_speed = (float)read_u16_le(&data[2]);
+    profile->approach_ratio = (float)read_u16_le(&data[6]) / 10000.0f;
+    profile->kp = (float)read_u16_le(&data[4]) / 10.0f;
 }
 
 static bool load_saved_profiles(void)
@@ -152,6 +139,7 @@ void PressureTuning_Init(void)
         LOGW("[Tuning] DEBUG: CODE TABLE LOCKED; EEPROM/host profile overrides disabled");
         return;
     }
+    if (g_pressure_jlink_tuning_enabled != 0U) return;
     if (load_saved_profiles()) {
         LOGI("[Tuning] Pressure profiles loaded from external EEPROM");
     } else {
@@ -194,6 +182,7 @@ bool PressureTuning_Set(uint8_t index, const PressureTuningProfile *profile)
 
 bool PressureTuning_Save(void)
 {
+    if (PRESSURE_JLINK_TUNING_ENABLE != 0U) return false;
     if (TUNING_USE_CODE_DEFAULTS != 0U) {
         LOGW("[Tuning] Profile save rejected: CODE TABLE LOCKED");
         return false;

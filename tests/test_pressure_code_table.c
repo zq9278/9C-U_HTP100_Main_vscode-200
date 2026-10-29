@@ -36,18 +36,18 @@ int main(void)
         PressureTuningProfile baseline;
         assert(PressureTuning_Get(i, &baseline));
         const PressureTuningProfile *active = PressureTuning_ProfileForTarget(targets[i]);
-        assert(active->retract_ms == baseline.retract_ms);
+        assert(active->retract_speed == baseline.retract_speed);
         assert(active->kp == baseline.kp);
         /* Even a valid host profile cannot override the locked code table. */
         PressureTuningProfile override = baseline;
         override.kp = 10.0f;
-        override.retract_ms = baseline.retract_ms == 600U ? 700U : 600U;
+        override.retract_speed = baseline.retract_speed == 600U ? 700U : 600U;
         assert(!PressureTuning_Set(i, &override));
-        assert(PressureTuning_ProfileForTarget(targets[i])->retract_ms == baseline.retract_ms);
+        assert(PressureTuning_ProfileForTarget(targets[i])->retract_speed == baseline.retract_speed);
         assert(PressureTuning_ProfileForTarget(targets[i])->kp == baseline.kp);
         PressureTuningProfile reported;
         assert(PressureTuning_Get(i, &reported));
-        assert(reported.retract_ms == baseline.retract_ms);
+        assert(reported.retract_speed == baseline.retract_speed);
         assert(reported.kp == baseline.kp);
     }
     assert(!PressureTuning_Save());
